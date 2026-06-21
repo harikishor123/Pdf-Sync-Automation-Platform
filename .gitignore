@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.runtime/
+*.log
+coverage/
+
+# macOS metadata
+.DS_Store
+
+# Parser debug output (contains real passenger data)
+debug/
+
+# PDF files (may contain real passenger data)
+*.pdf
