@@ -57,15 +57,15 @@ Monitor Dashboard (GET /monitor)
 
 ## Technology Stack
 
-| Layer | Technology | Why |
-|---|---|---|
-| Backend framework | NestJS v11 | Structured DI, decorators, lifecycle hooks |
-| Language | TypeScript 5.7 | Type safety across all services |
-| Database | Supabase (PostgreSQL) | Hosted Postgres + REST client, no server to manage |
-| Browser automation | Playwright 1.57 | Reliable cross-browser DOM automation |
-| PDF extraction | pdf-parse 1.1.1 | Pure Node.js, no binary deps |
-| Config | @nestjs/config | `.env` file loaded at boot |
-| Auth guard | Custom ApiKeyGuard | Static API key via `X-API-Key` header |
+| Layer              | Technology            | Why                                                |
+| ------------------ | --------------------- | -------------------------------------------------- |
+| Backend framework  | NestJS v11            | Structured DI, decorators, lifecycle hooks         |
+| Language           | TypeScript 5.7        | Type safety across all services                    |
+| Database           | Supabase (PostgreSQL) | Hosted Postgres + REST client, no server to manage |
+| Browser automation | Playwright 1.57       | Reliable cross-browser DOM automation              |
+| PDF extraction     | pdf-parse 1.1.1       | Pure Node.js, no binary deps                       |
+| Config             | @nestjs/config        | `.env` file loaded at boot                         |
+| Auth guard         | Custom ApiKeyGuard    | Static API key via `X-API-Key` header              |
 
 ---
 
@@ -201,6 +201,7 @@ MonitorController
 ## Controller layer
 
 `PdfSyncController` is a pure HTTP adapter. It:
+
 - Accepts HTTP requests
 - Extracts inputs (query params, uploaded files)
 - Calls one `PdfSyncService` method
@@ -219,6 +220,7 @@ It contains zero business logic.
 ## Supabase layer
 
 `SupabaseService.getClient()` returns the same `SupabaseClient` instance on every call (singleton). The client uses the service role key which means:
+
 - Row Level Security is bypassed automatically
 - No authentication step is needed before each request
 - The client has full read/write/delete access to all tables
@@ -238,6 +240,7 @@ All `/pdf-sync/*` endpoints require the `X-API-Key` header if `PDF_SYNC_API_KEY`
 **Request:** No body, no query params.
 
 **Response:**
+
 ```json
 {
   "syncStatus": "idle",
@@ -249,6 +252,7 @@ All `/pdf-sync/*` endpoints require the `X-API-Key` header if `PDF_SYNC_API_KEY`
 ```
 
 **Code path:**
+
 ```
 PdfSyncController.getSummary()
   → PdfSyncService.getSummary()
@@ -260,6 +264,7 @@ PdfSyncController.getSummary()
 **Database operations:** Two parallel Supabase SELECT queries (COUNT and most-recent row).
 
 **Sequence:**
+
 ```
 Browser (dashboard)
   │  GET /pdf-sync/summary
@@ -288,6 +293,7 @@ HTTP 200 JSON response to browser
 **Request:** Optional query param `?limit=20` (max 100, default 20).
 
 **Response:**
+
 ```json
 [
   {
@@ -304,6 +310,7 @@ HTTP 200 JSON response to browser
 ```
 
 **Code path:**
+
 ```
 PdfSyncController.getImports(limit)
   → PdfSyncService.getImports(20)
@@ -325,6 +332,7 @@ Note: `seat_details` is fetched only to compute `passenger_count`. The full JSON
 **Request:** Nothing.
 
 **Response:**
+
 ```json
 {
   "backend": true,
@@ -335,6 +343,7 @@ Note: `seat_details` is fetched only to compute `passenger_count`. The full JSON
 ```
 
 **Code path:**
+
 ```
 PdfSyncController.checkHealth()
   → PdfSyncService.checkHealth()
@@ -354,6 +363,7 @@ PdfSyncController.checkHealth()
 **Request:** `multipart/form-data`, field name `file`, containing a PDF file (max 20 MB).
 
 **Response:**
+
 ```json
 {
   "pdfName": "flixbus-manifest.pdf",
@@ -368,13 +378,19 @@ PdfSyncController.checkHealth()
     "arrival": "Pune",
     "driver_details": [],
     "seat_details": [
-      { "seat_no": "1D", "name": "Venkatesh Vasamsetty", "phone": "+919491689434", "shop": "Redbus" }
+      {
+        "seat_no": "1D",
+        "name": "Venkatesh Vasamsetty",
+        "phone": "+919491689434",
+        "shop": "Redbus"
+      }
     ]
   }
 }
 ```
 
 **Code path:**
+
 ```
 PdfSyncController.testParse(file)
   → FileInterceptor (Multer) reads multipart body, stores file in memory
@@ -396,16 +412,19 @@ PdfSyncController.testParse(file)
 **Request:** Same as `test-parse` — `multipart/form-data` with field `file`.
 
 **Response (new import):**
+
 ```json
 { "status": "imported", "id": "uuid", "pdfName": "manifest.pdf", "parsed": { ... } }
 ```
 
 **Response (duplicate):**
+
 ```json
 { "status": "duplicate", "id": "existing-uuid", "pdfName": "manifest.pdf" }
 ```
 
 **Code path:**
+
 ```
 PdfSyncController.importPdf(file)
   → PdfSyncService.importUploadedPdf(file)
@@ -430,6 +449,7 @@ PdfSyncController.importPdf(file)
 **Request:** No body.
 
 **Response:**
+
 ```json
 {
   "scanned": 3,
@@ -473,6 +493,7 @@ For WhatsApp Web, this means the authentication token (stored in IndexedDB and l
 Session data location: `.runtime/pdf-sync/whatsapp-session/Default/`
 
 Key subdirectories:
+
 - `Local Storage/` — WhatsApp's primary auth token storage
 - `IndexedDB/` — message cache and keys
 - `Cookies` — session cookies
@@ -510,7 +531,7 @@ And immediately after context creation:
 ```typescript
 // 3. Remove navigator.webdriver from the JavaScript environment
 await context.addInitScript(() => {
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  Object.defineProperty(navigator, "webdriver", { get: () => undefined });
 });
 ```
 
@@ -601,6 +622,7 @@ WHAT pdf-parse EXTRACTED (one line, no spaces between cells):
 ```
 
 This caused every regex to fail:
+
 - `\bDate` failed because `\b` requires a word boundary, and `1Date` has no boundary between `1` and `D`
 - `\bDeparture` failed because `2026Departure` has no boundary between `6` and `D`
 - The plate regex captured `MH49CW0841Date` because `[A-Z0-9]+` consumed the capital `D` of `Date`
@@ -624,6 +646,7 @@ The order is critical. Compound labels like `Departure Time` must be processed b
 **Rule:** Insert `\n` before the label only when the preceding character is a non-whitespace character (regex lookbehind `(?<=[^\s])`).
 
 **Before → After:**
+
 ```
 "Plate MH49CW0841Date 16.06.2026Departure Time 18:00Arrival Time 09:35"
   ↓ insert \n before "Departure Time"
@@ -643,6 +666,7 @@ RESULT:
 ```
 
 For the city line:
+
 ```
 "Departure HyderabadArrival Pune"
   ↓ insert \n before "Arrival" (preceded by "d" — non-whitespace)
@@ -664,6 +688,7 @@ RESULT:
 `Phone(?!Pe)` is a negative lookahead — it matches `Phone` only when NOT followed by `Pe`. This prevents splitting the booking source `PhonePe` into `Phone Pe`.
 
 **Before → After:**
+
 ```
 "NameRolePhone"
   ↓ "Name" preceded by \n → no insertion (already at line start)
@@ -690,6 +715,7 @@ RESULT:
 The seat token in FlixBus manifests is always `\d{1,2}[A-Z]` (row number + column letter, e.g. `1D`, `12A`). Passenger names always start with an uppercase letter. The regex matches exactly one letter after the seat code and inserts a space.
 
 **Before → After:**
+
 ```
 "1DVenkatesh Vasamsetty+919491689434Redbus"
   ↓ "1D" + "V" → insert space
@@ -709,6 +735,7 @@ The seat token in FlixBus manifests is always `\d{1,2}[A-Z]` (row number + colum
 Matches any non-whitespace character directly followed by an Indian phone number (with or without `+91` prefix). Inserts a space between them.
 
 **Before → After:**
+
 ```
 "1D Venkatesh Vasamsetty+919491689434Redbus"
   ↓ "y" + "+919491689434" → insert space
@@ -724,6 +751,7 @@ Matches any non-whitespace character directly followed by an Indian phone number
 Booking sources: `Redbus`, `PayTM`, `Paytm`, `AbhiBus`, `IntrCity`, `Offline`, `Agent`, `PhonePe`, `MakeMyTrip`, `Flix`
 
 **Before → After:**
+
 ```
 "1D Venkatesh Vasamsetty +919491689434Redbus"
   ↓ "4" + "Redbus" → insert space
@@ -754,6 +782,7 @@ With this clean input, every existing regex in `parseText()` matches correctly w
 ## Debug file output
 
 Every call to `PdfParserService.parse()` writes two files:
+
 - `debug/raw-text.txt` — exactly what pdf-parse returned
 - `debug/normalized-text.txt` — the text after all 5 normalization phases
 
@@ -766,6 +795,7 @@ These files are overwritten on each parse. They are invaluable for diagnosing pa
 ## Why single-table design
 
 The original schema had five tables:
+
 - `pdf_imports` — one row per imported PDF file
 - `passenger_imports` — aggregate counts
 - `flixbus_trips` — trip metadata (route, times)
@@ -833,6 +863,7 @@ Example: `"Pune"`
 Type: `jsonb`. Array of driver objects for this trip. Can be empty if no drivers are listed. The driver section in the PDF is between the `Name Role Phone` header and the `Seat Number` header.
 
 Schema:
+
 ```json
 [
   {
@@ -849,6 +880,7 @@ Schema:
 Type: `jsonb`. Array of passenger objects. One entry per passenger seat.
 
 Schema:
+
 ```json
 [
   {
@@ -864,7 +896,7 @@ Schema:
 
 **`pdf_hash`**
 Type: `text UNIQUE`. SHA-256 hex digest of the raw PDF binary. 64 characters. Used for duplicate detection. The `UNIQUE` constraint ensures no two rows can have the same hash at the database level, providing a second layer of protection beyond the application-level check.
-Example: `"a3f5c2d1e8b9..."`  (64 hex chars)
+Example: `"a3f5c2d1e8b9..."` (64 hex chars)
 
 **`created_at`**
 Type: `timestamptz NOT NULL DEFAULT now()`. The timestamp when the row was inserted into the database. Set automatically by PostgreSQL.
@@ -883,6 +915,7 @@ CREATE INDEX flixbus_data_plate_date_idx ON public.flixbus_data (plate, date);
 ### Row Level Security
 
 RLS is enabled but no policies are defined. This means:
+
 - The service role key (used by the backend) bypasses RLS entirely → full access
 - The anon key or authenticated user keys cannot read or write this table → zero access from the public internet
 
@@ -909,6 +942,7 @@ private hashBuffer(buffer: Buffer): string {
 SHA-256 produces a 64-character hexadecimal string. Two files with identical bytes will always produce the same hash. Two files with even one byte difference will produce completely different hashes.
 
 Hashing the raw bytes (not the parsed text) is important because:
+
 - The parsed text might be identical for two different PDFs (same trip, re-generated)
 - The raw bytes capture the exact PDF version, including metadata
 
@@ -916,14 +950,14 @@ Hashing the raw bytes (not the parsed text) is important because:
 
 ```typescript
 const { data: existing } = await supabase
-  .from('flixbus_data')
-  .select('id')
-  .eq('pdf_hash', pdfHash)
+  .from("flixbus_data")
+  .select("id")
+  .eq("pdf_hash", pdfHash)
   .maybeSingle();
 
 if (existing) {
   this.logger.warn(`[PDF Sync] Duplicate skipped: ${pdfName}`);
-  return { status: 'duplicate', id: existing.id, pdfName };
+  return { status: "duplicate", id: existing.id, pdfName };
 }
 ```
 
@@ -934,8 +968,8 @@ if (existing) {
 In the WhatsApp sync loop (`checkForNewPdfs`), the consumer breaks as soon as it sees the first duplicate:
 
 ```typescript
-if (result.status === 'duplicate') {
-  this.logger.log('[PDF Sync] Duplicate hit — stopping scan.');
+if (result.status === "duplicate") {
+  this.logger.log("[PDF Sync] Duplicate hit — stopping scan.");
   break;
 }
 ```
@@ -948,12 +982,12 @@ Even if the application-level check is bypassed (concurrent requests, race condi
 
 ## Example Scenarios
 
-| Scenario | Result |
-|---|---|
-| New PDF, never imported | Imported → new row with new uuid |
-| Same PDF re-sent in group | Hash matches existing row → status: duplicate, scan stops |
-| PDF with same content but different bytes (re-generated) | New hash → imported as new row |
-| Two syncs running simultaneously (race condition) | First INSERT wins, second gets DB constraint error |
+| Scenario                                                 | Result                                                    |
+| -------------------------------------------------------- | --------------------------------------------------------- |
+| New PDF, never imported                                  | Imported → new row with new uuid                          |
+| Same PDF re-sent in group                                | Hash matches existing row → status: duplicate, scan stops |
+| PDF with same content but different bytes (re-generated) | New hash → imported as new row                            |
+| Two syncs running simultaneously (race condition)        | First INSERT wins, second gets DB constraint error        |
 
 ---
 
@@ -983,14 +1017,14 @@ Then: setInterval(10000) → loadSummary() + loadImports() every 10 seconds
 
 Data source: `GET /pdf-sync/summary` → `PdfSyncService.getSummary()`
 
-| UI element | Data field | Notes |
-|---|---|---|
-| Coloured dot | `syncStatus` | idle=grey, running=blue(blink), success=green, failed=red |
-| Status text | `syncStatus` | Capitalised |
-| WhatsApp Group | `whatsappGroup` | From `PDF_SYNC_WHATSAPP_GROUP` env var |
-| Last Sync | `lastSyncTime` | `created_at` of most recent row in `flixbus_data` |
-| PDFs Imported | `pdfsImported` | COUNT(*) of `flixbus_data` |
-| Last Imported PDF | `lastImportedPdf` | Joined string: `bus_partner · plate · date` |
+| UI element        | Data field        | Notes                                                     |
+| ----------------- | ----------------- | --------------------------------------------------------- |
+| Coloured dot      | `syncStatus`      | idle=grey, running=blue(blink), success=green, failed=red |
+| Status text       | `syncStatus`      | Capitalised                                               |
+| WhatsApp Group    | `whatsappGroup`   | From `PDF_SYNC_WHATSAPP_GROUP` env var                    |
+| Last Sync         | `lastSyncTime`    | `created_at` of most recent row in `flixbus_data`         |
+| PDFs Imported     | `pdfsImported`    | COUNT(\*) of `flixbus_data`                               |
+| Last Imported PDF | `lastImportedPdf` | Joined string: `bus_partner · plate · date`               |
 
 The "Run Sync" button calls `POST /pdf-sync/sync`. While the request is in flight, the dashboard plays a pre-scripted log animation (the `STEPS` array with timed `setTimeout`s) to show the user what phase the sync is likely in. When the real response arrives, the animation is cancelled and the actual result is logged.
 
@@ -998,12 +1032,12 @@ The "Run Sync" button calls `POST /pdf-sync/sync`. While the request is in fligh
 
 Data source: `GET /pdf-sync/health` → `PdfSyncService.checkHealth()`
 
-| UI element | Data field | Green if |
-|---|---|---|
-| Backend reachable | `backend` | Always true (response received) |
-| Supabase connected | `supabase` | Supabase SELECT did not error |
+| UI element         | Data field                | Green if                               |
+| ------------------ | ------------------------- | -------------------------------------- |
+| Backend reachable  | `backend`                 | Always true (response received)        |
+| Supabase connected | `supabase`                | Supabase SELECT did not error          |
 | WhatsApp group set | `whatsappGroupConfigured` | `PDF_SYNC_WHATSAPP_GROUP` is non-empty |
-| Group name | `whatsappGroup` | Display only |
+| Group name         | `whatsappGroup`           | Display only                           |
 
 The card is collapsible (click the section title to toggle).
 
@@ -1017,14 +1051,14 @@ Log classes: `hi` (blue highlight), `ok` (green), `err` (red), `wrn` (yellow), d
 
 Data source: `GET /pdf-sync/imports?limit=20` → `PdfSyncService.getImports()`
 
-| Column | Data field | Format |
-|---|---|---|
-| Bus Partner | `bus_partner` | Plain text |
-| Vehicle | `plate` | Monospace `<code>` tag |
-| Route | `departure → arrival` | Joined with arrow, computed client-side |
-| Travel Date | `date` | `en-IN` locale date format |
-| Passengers | `passenger_count` | Blue pill badge |
-| Imported At | `created_at` | `en-IN` locale datetime |
+| Column      | Data field            | Format                                  |
+| ----------- | --------------------- | --------------------------------------- |
+| Bus Partner | `bus_partner`         | Plain text                              |
+| Vehicle     | `plate`               | Monospace `<code>` tag                  |
+| Route       | `departure → arrival` | Joined with arrow, computed client-side |
+| Travel Date | `date`                | `en-IN` locale date format              |
+| Passengers  | `passenger_count`     | Blue pill badge                         |
+| Imported At | `created_at`          | `en-IN` locale datetime                 |
 
 Auto-refreshes every 10 seconds via `setInterval`.
 
@@ -1204,7 +1238,7 @@ Auto-refreshes every 10 seconds via `setInterval`.
 **Purpose:** The base URL of the Supabase project's REST API.
 **Used by:** `SupabaseService` (constructor)
 **Default:** None — server crashes at startup if missing
-**Example:** `https://fkxstshtuugnmlpzrdei.supabase.co`
+**Example:** `https://YOUR_PROJECT_ID.supabase.co`
 **Where to find:** Supabase Dashboard → Project Settings → API → Project URL
 
 ## `SUPABASE_SERVICE_ROLE_KEY`
@@ -1268,7 +1302,7 @@ Auto-refreshes every 10 seconds via `setInterval`.
 **Used by:** `ApiKeyGuard`
 **Default:** If not set, all requests are allowed (development mode — no authentication)
 **How to use:** Set the key in `.env`, then pass it on every API request:
-  `X-API-Key: your-key` or `Authorization: Bearer your-key`
+`X-API-Key: your-key` or `Authorization: Bearer your-key`
 **Example:** `my-secret-key-abc123`
 
 ---
@@ -1282,6 +1316,7 @@ Auto-refreshes every 10 seconds via `setInterval`.
 **Root cause:** The `flixbus_data` table does not exist in Supabase. The migration SQL has been written locally but not executed in the Supabase project.
 
 **Fix:**
+
 1. Open [Supabase Dashboard](https://supabase.com/dashboard)
 2. Select your project
 3. SQL Editor → New query
@@ -1289,6 +1324,7 @@ Auto-refreshes every 10 seconds via `setInterval`.
 5. Click Run
 
 **Diagnose:**
+
 ```bash
 # Check health endpoint — supabase field will be false
 curl http://localhost:3000/pdf-sync/health
@@ -1303,6 +1339,7 @@ curl http://localhost:3000/pdf-sync/health
 **Root cause:** The Playwright browser profile directory contains no valid WhatsApp session, or WhatsApp has expired/invalidated the session.
 
 **Fix:**
+
 1. Set `PDF_SYNC_HEADLESS=false` in `.env`
 2. Delete the existing session: `rm -rf ".runtime/pdf-sync/whatsapp-session"`
 3. Restart the server: `npm run start:dev`
@@ -1312,6 +1349,7 @@ curl http://localhost:3000/pdf-sync/health
 7. Set `PDF_SYNC_HEADLESS=true` in `.env` and restart for future automated runs
 
 **Diagnose:**
+
 ```bash
 ls ".runtime/pdf-sync/whatsapp-session/Default/"
 # Should contain: Cookies, Local Storage, IndexedDB
@@ -1327,16 +1365,20 @@ ls ".runtime/pdf-sync/whatsapp-session/Default/"
 **Root cause:** WhatsApp Web detects the Playwright browser automation via `navigator.webdriver = true` and forces re-authentication even with a valid saved session.
 
 **Fix:** This was permanently fixed by adding to `whatsapp.service.ts`:
+
 ```typescript
 args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
 userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ... Chrome/136.0.0.0 ...',
 ```
+
 and:
+
 ```typescript
 await context.addInitScript(() => {
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  Object.defineProperty(navigator, "webdriver", { get: () => undefined });
 });
 ```
+
 If headless fails again after this fix, WhatsApp has updated its detection. Delete the session and re-scan.
 
 ---
@@ -1348,6 +1390,7 @@ If headless fails again after this fix, WhatsApp has updated its detection. Dele
 **Root cause:** The PDF layout may have changed, or the normalization phases are not covering a new concatenation pattern.
 
 **Diagnose:**
+
 ```bash
 # After uploading the PDF via test-parse, check debug files
 cat debug/raw-text.txt
@@ -1357,6 +1400,7 @@ cat debug/normalized-text.txt
 Compare the raw text to the normalized text. Find which field label is missing or malformed. The normalization phase that handles that label needs to be checked.
 
 **Specific sub-cases:**
+
 - `plate` ends with extra characters → the plate value is running into the next label without a space → Phase 1 failed to split before that label
 - `date = null` → `\bDate` is not matching → Phase 1 did not insert a `\n` before `Date` → check that `Date` appears in Phase 1's label list
 - `seat_details = []` → seat header not detected OR seat tokens not matching → check Phase 3 regex against the actual seat format in the new PDF
@@ -1372,6 +1416,7 @@ Compare the raw text to the normalized text. Find which field label is missing o
 **This is correct behaviour** — if the PDF bytes are different, they are treated as different documents. To de-duplicate by trip content, a composite unique index on `(plate, date)` could be added.
 
 **If identical PDFs are being duplicated** (same hash but appearing twice), check if the `UNIQUE` constraint on `pdf_hash` exists:
+
 ```sql
 SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'flixbus_data';
 ```
@@ -1383,11 +1428,13 @@ SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'flixbus_data';
 **Symptoms:** `POST /pdf-sync/import-pdf` or sync returns HTTP 500.
 
 **Root cause options:**
+
 1. Supabase INSERT failed (constraint violation, type mismatch, network error)
 2. pdf-parse threw an exception (corrupted PDF, encrypted PDF, image-only PDF)
 3. The parsed fields contain a type that Supabase rejects
 
 **Diagnose:**
+
 ```bash
 # Check server logs for the specific error message
 npm run start:dev
@@ -1405,6 +1452,7 @@ Check `debug/raw-text.txt` — if it is empty or contains only whitespace, the P
 **Root cause:** A previous server process did not shut down cleanly.
 
 **Fix:**
+
 ```bash
 # Find and kill the process
 pkill -f "node dist/main"
@@ -1419,11 +1467,13 @@ lsof -ti:3000 | xargs kill -9
 **Symptoms:** Playwright crashes at launch, OR each run creates a new session directory, OR the session is not persisted between runs.
 
 **Root cause options:**
+
 1. The env var `PDF_SYNC_WHATSAPP_SESSION_DIR` is not being read (wrong key name in `.env`)
 2. The directory path does not exist and `mkdirSync` failed silently
 3. Permissions issue on the directory
 
 **Diagnose:**
+
 ```bash
 # Check what session dir is being used
 ls -la ".runtime/pdf-sync/whatsapp-session/"
@@ -1443,6 +1493,7 @@ grep SESSION .env
 **Current state:** The scheduler uses `setTimeout` which is lost if the Node.js process crashes or is restarted.
 
 **Improvement:** Replace with a proper cron mechanism:
+
 - Use `@nestjs/schedule` with `@Cron('0 3 * * *')` decorator on `PdfSyncSchedulerService`
 - Or use a managed queue like BullMQ (Redis-backed) with `@nestjs/bull`
 - Either approach survives process restarts and provides retry logic on failure
@@ -1462,6 +1513,7 @@ grep SESSION .env
 **Current state:** No notification when a sync runs or fails.
 
 **Improvement:** After each sync, send a summary to a configured webhook:
+
 - Slack: `POST` to Slack Incoming Webhook URL with the scan/import/skip counts
 - Telegram: `POST` to `https://api.telegram.org/bot<token>/sendMessage`
 
@@ -1472,6 +1524,7 @@ grep SESSION .env
 **Current state:** Passenger data is stored in JSONB, not queryable by name or phone.
 
 **Improvement:** Add a `GET /pdf-sync/search?phone=9876543210` endpoint that queries:
+
 ```sql
 SELECT * FROM flixbus_data
 WHERE seat_details @> '[{"phone": "+919876543210"}]';
@@ -1484,6 +1537,7 @@ This uses PostgreSQL's JSONB containment operator (`@>`) which works without sch
 **Current state:** No aggregation across imports.
 
 **Improvement:** Add a `GET /pdf-sync/analytics` endpoint that returns:
+
 - Most popular routes (GROUP BY departure, arrival)
 - Busiest travel dates
 - Average passengers per trip
@@ -1502,220 +1556,3 @@ All queries run directly on `flixbus_data` using `jsonb_array_length(seat_detail
 **Current state:** One WhatsApp group is configured.
 
 **Improvement:** Accept `PDF_SYNC_WHATSAPP_GROUPS` as a comma-separated list of group names. Run the scan in sequence for each group. Tag each imported row with a `group_name` column.
-
----
-
-# 14. Knowledge Check — 30 Interview Questions
-
----
-
-**Q1: What problem does this project solve in one sentence?**
-
-It automates downloading FlixBus passenger manifest PDFs from a WhatsApp group and storing the structured passenger data in a database, eliminating manual PDF handling for bus operators.
-
----
-
-**Q2: Why is NestJS used instead of plain Express?**
-
-NestJS provides a structured, Angular-inspired architecture with dependency injection, decorators, lifecycle hooks (`OnModuleInit`, `OnModuleDestroy`), and a clear module system. This makes the codebase maintainable as it grows — adding new features means creating a new module with clear boundaries, not bolting handlers onto a flat file.
-
----
-
-**Q3: What is a persistent Playwright context and why is it used here?**
-
-A persistent context (`chromium.launchPersistentContext(dir)`) stores the browser's profile — cookies, localStorage, IndexedDB — in a directory on disk. On the next launch, the browser restores this profile. WhatsApp Web stores authentication tokens in IndexedDB, so a persistent context means you only need to scan the QR code once. A regular context discards everything on close, forcing re-authentication every run.
-
----
-
-**Q4: Why did headless mode fail before the fix?**
-
-When Playwright/Chromium runs in headless mode, it sets `navigator.webdriver = true` in the browser's JavaScript environment. WhatsApp Web reads this property to detect bot automation and displays the QR login screen regardless of whether a valid session exists. The fix hides this property using `addInitScript` and adds the `--disable-blink-features=AutomationControlled` Chromium flag.
-
----
-
-**Q5: What is pdf-parse and what is its limitation with FlixBus PDFs?**
-
-`pdf-parse` extracts the text layer from PDFs. Its limitation is that it concatenates adjacent cells from multi-column PDF table layouts without inserting spaces between them. FlixBus manifests use a table layout, so all fields on the same row become one continuous string with no separators: `"MH49CW0841Date 16.06.2026Departure Time 18:00"`.
-
----
-
-**Q6: Describe the five normalization phases.**
-
-Phase 1 inserts newlines before field labels (`Date`, `Departure Time`, etc.) to split them onto separate lines. Phase 2 inserts spaces before column header keywords (`Name`, `Role`, `Phone`, `Shop`) to restore header readability. Phase 3 splits seat tokens from passenger names (`1DVenkatesh` → `1D Venkatesh`). Phase 4 inserts space before Indian phone numbers. Phase 5 inserts space before booking source names.
-
----
-
-**Q7: Why is Phase 1 ordered with `Departure Time` before `Departure`?**
-
-If `Departure` were processed first, `Departure Time` would be split into `\nDeparture Time` — then the second pass would see `\nDeparture` and try to insert another `\n` before it, resulting in `\n\nDeparture Time`. Processing the longer phrase first prevents this double-insertion.
-
----
-
-**Q8: How is duplicate detection implemented?**
-
-A SHA-256 hash of the raw PDF bytes is computed using Node's built-in `crypto.createHash('sha256')`. Before inserting, the hash is checked against the `pdf_hash` column in `flixbus_data`. If a matching row exists, the import is skipped. The `pdf_hash` column also has a `UNIQUE` constraint as a database-level safety net.
-
----
-
-**Q9: Why does the sync loop break on the first duplicate?**
-
-PDFs are processed newest-first. If a duplicate is found, it means all older PDFs have already been imported in a previous run. There is no need to scan further — breaking the loop closes the browser early and avoids unnecessary downloads and database queries.
-
----
-
-**Q10: What is the `AsyncGenerator` pattern and why is it used in `WhatsAppService`?**
-
-`streamPdfsNewestFirst()` is an `AsyncGenerator` — it uses `yield` to return one PDF at a time and suspends until the consumer asks for the next one. This means the browser downloads one PDF, the consumer processes it, and only if processing succeeded does the browser continue to the next card. If the consumer breaks early (duplicate found), the generator's `finally` block runs and closes the browser. This prevents downloading PDFs that will never be used.
-
----
-
-**Q11: What does the `@Global()` decorator on `SupabaseModule` do?**
-
-It makes `SupabaseService` available for injection in any module without explicitly importing `SupabaseModule`. Since every feature module needs database access, making it global avoids repetitive `imports: [SupabaseModule]` in every feature module.
-
----
-
-**Q12: Why does `SupabaseService` set `autoRefreshToken: false`?**
-
-The service role key does not expire — it is a permanent administrative secret. Token refresh is only needed for user-scoped JWTs that expire after a set period. Since the backend always uses the service role key and never authenticates as an end user, auto-refresh would be unnecessary overhead.
-
----
-
-**Q13: Why is Row Level Security enabled but no policies are defined?**
-
-RLS enabled + no policies = complete lockdown for non-service-role access. The anon key and any authenticated user JWT cannot read or write the table. Only the service role key (which bypasses RLS) can access it. This is intentional — passenger data should never be accessible to the public internet through the Supabase auto-generated REST endpoints.
-
----
-
-**Q14: What is the `ApiKeyGuard` and when does it allow requests through?**
-
-It is a NestJS guard applied to all `/pdf-sync/*` endpoints. It reads `PDF_SYNC_API_KEY` from config. If the env var is not set, it allows all requests (development mode — no key required). If set, it checks the `X-API-Key` header or `Authorization: Bearer` header. If the provided key matches, the request proceeds; otherwise it returns HTTP 401.
-
----
-
-**Q15: How does the monitor dashboard receive live data without WebSockets?**
-
-It uses periodic polling — `setInterval(10000)` calls `loadSummary()` and `loadImports()` every 10 seconds. The sync button's log messages are pre-scripted animations (array of `[delay, message]` pairs) that approximate the real steps. When the actual response arrives, the script cancels the animation timers and logs the real result.
-
----
-
-**Q16: Why is the dashboard HTML a template literal inside a TypeScript file instead of a separate HTML file?**
-
-No frontend build step is required. There is no webpack, Vite, or asset copying. The entire UI ships in the TypeScript source and is served directly by NestJS. For a simple monitoring page this is the lowest-maintenance approach — one file, zero tooling.
-
----
-
-**Q17: What happens if `pdf-parse` encounters a scanned image PDF?**
-
-`pdf-parse` extracts only the text layer. A scanned image PDF (a photo of a document) has no text layer — it contains only image data. `pdf-parse` returns an empty string. The parser would return all `null` fields and empty arrays. There is no OCR capability in this project. The parse would succeed (no exception) but the insert would store a row with mostly null values.
-
----
-
-**Q18: Explain the scheduler's `OnModuleInit` and `OnModuleDestroy` hooks.**
-
-`OnModuleInit.onModuleInit()` is called after all dependencies are injected and the module is fully initialised. The scheduler uses it to start the first `setTimeout`. `OnModuleDestroy.onModuleDestroy()` is called when the application is shutting down (SIGTERM, Ctrl+C, or hot-reload). The scheduler uses it to `clearTimeout(this.timer)` — without this, a pending timer could fire after the module is destroyed, calling a service that no longer exists.
-
----
-
-**Q19: How does `parseDrivers()` extract the role without a fixed vocabulary?**
-
-It identifies the driver section by the presence of a `Name|Role|Phone` header line. For each line in the section, it finds the phone number, removes it, then splits the remaining text by whitespace. The **last token** before the phone is treated as the role, and everything before it is the driver name. This handles any role value — `Driver`, `Co-Driver`, `host_India`, etc. — without a hardcoded list.
-
----
-
-**Q20: What does `maybeSingle()` return if no row is found, and why use it over `single()`?**
-
-`maybeSingle()` returns `null` (no error) if zero rows match. `single()` throws an error if zero rows match. For the duplicate check, no matching row is the expected happy path — it means the PDF is new. Using `single()` would require try/catch for the normal case, which is misleading. `maybeSingle()` cleanly returns `null` for the "not found" case.
-
----
-
-**Q21: What is the difference between `npm run start` and `npm run start:dev`?**
-
-`npm run start` runs `node dist/main` — it executes the pre-compiled JavaScript. You must run `npm run build` first. `npm run start:dev` runs `nest start --watch` — it compiles TypeScript incrementally and restarts the server automatically when source files change. Use `start:dev` during development and `start` in production.
-
----
-
-**Q22: Why are `seat_details` and `driver_details` stored as JSONB instead of separate tables?**
-
-For this use case, passengers are always read as a complete set for a given trip — they are never queried individually (e.g. "find all trips for passenger X"). JSONB stores the array as a single column, requires zero JOINs to retrieve, and simplifies the write path (one INSERT per PDF). If passenger search becomes a requirement, PostgreSQL's `@>` JSONB containment operator handles it without schema changes.
-
----
-
-**Q23: How would you add a new booking source (e.g. "EaseMyTrip") to the parser?**
-
-In `PdfParserService.normalizeText()`, the Phase 5 shops array:
-```typescript
-const shops = ['Redbus', 'PayTM', ...];
-```
-Add `'EaseMyTrip'` to this array.
-
-Also in `parseSeats()`, the same shops array is used for detection:
-```typescript
-const shops = ['Redbus', 'PayTM', ...];
-```
-Add `'EaseMyTrip'` there too. No other changes needed.
-
----
-
-**Q24: What happens to the browser if `PdfSyncService` throws an exception mid-loop?**
-
-The exception propagates through the `for await...of` loop, breaking it. In the `WhatsAppService.streamPdfsNewestFirst()` generator, the `finally` block always runs regardless of how the generator ends — whether by normal completion, early `break`, or an exception thrown by the consumer. The `finally` block calls `await context.close()`, closing the browser cleanly.
-
----
-
-**Q25: Explain the `ValidationPipe` configured in `main.ts`.**
-
-```typescript
-new ValidationPipe({ whitelist: true, transform: true })
-```
-
-`whitelist: true` strips any properties from the request body that are not declared in the DTO class. This prevents unexpected extra fields from reaching handlers. `transform: true` auto-converts incoming strings to the correct TypeScript types (e.g. a query param `limit` arrives as a string but is converted to a number if the handler expects `number`). The `getImports` method uses this: `@Query('limit') limit?: string` and then `Number(limit) || 20`.
-
----
-
-**Q26: What would break if you renamed the `pdf_hash` column to `hash`?**
-
-All TypeScript code that references this column by string:
-- `supabase.select('...').eq('pdf_hash', pdfHash)` in the duplicate check
-- `.insert({ pdf_hash: pdfHash })` in the insert
-- The SQL migrations themselves
-
-You would also need to drop and recreate the `UNIQUE` index. The `FlixBusParsed` interface would not need changes (it does not have a `pdf_hash` field — the hash is computed separately, not returned by the parser).
-
----
-
-**Q27: How is the "passenger_count" computed without a dedicated column?**
-
-In `PdfSyncService.getImports()`:
-```typescript
-passenger_count: Array.isArray(row.seat_details) ? row.seat_details.length : 0,
-```
-The `seat_details` JSONB array is fetched and its JavaScript `.length` is used. Supabase deserialises the JSONB column into a JavaScript array automatically. No additional query is needed.
-
----
-
-**Q28: What env var would you set to run the sync automatically at 2:30 AM?**
-
-```
-PDF_SYNC_SCHEDULER_ENABLED=true
-PDF_SYNC_DAILY_TIME=02:30
-```
-
-The scheduler reads `PDF_SYNC_DAILY_TIME`, parses it as `HH:MM`, constructs a `Date` object for today at `02:30`, and computes the milliseconds until that time. If that time has already passed today, it adds 24 hours (schedules for tomorrow).
-
----
-
-**Q29: Why does the service call `this.supabaseService.getClient()` on every method call instead of storing the client once?**
-
-`SupabaseService` is a singleton — `getClient()` returns the same `SupabaseClient` instance every time. Calling it on each method is idiomatic and safe. There is no performance difference versus storing a local reference. It also makes the code intention clear: each method explicitly states that it requires a Supabase client.
-
----
-
-**Q30: How would you explain this project to a startup founder in one minute?**
-
-"We built an automation system for FlixBus operators. Every time a passenger manifest PDF is posted in your WhatsApp group, our system automatically opens WhatsApp Web in a hidden browser, downloads the PDF, reads all the passenger names, seat numbers, phone numbers, and booking platforms out of it, and saves everything to a cloud database. There's a live dashboard where you can see all imports, how many passengers are on each trip, and trigger a manual refresh. The whole thing runs on a server — you never have to open a PDF manually again."
-
----
-
-*End of Technical Handbook*
-*Last updated: 2026-06-21*
