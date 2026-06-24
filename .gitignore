@@ -8,6 +8,10 @@ coverage/
 # macOS metadata
 .DS_Store
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Parser debug output (contains real passenger data)
 debug/
 

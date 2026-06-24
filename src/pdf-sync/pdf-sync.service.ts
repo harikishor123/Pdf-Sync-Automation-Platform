@@ -108,15 +108,39 @@ export class PdfSyncService {
     this.logger.log('[PDF Sync] Manual sync started.');
     const results: Array<Record<string, any>> = [];
     let scanned = 0;
+    let consecutiveDuplicates = 0;
+    // Stop only after 2 consecutive duplicates — a single duplicate may mean a
+    // prior run was interrupted before finishing, leaving older PDFs unimported.
+    const stopAfterConsecutive = 2;
 
-    for await (const download of this.whatsApp.streamPdfsNewestFirst()) {
+    const knownFilenames = await this.loadKnownFilenames();
+    this.logger.log(`[PDF Sync] ${knownFilenames.size} known filename(s) loaded for pre-download check.`);
+
+    for await (const download of this.whatsApp.streamPdfsNewestFirst(
+      async (filename) => knownFilenames.has(filename),
+    )) {
       scanned++;
-      this.logger.log(`[PDF Sync] Processing: ${download.pdfName}`);
-      const result = await this.ingestDownloadedPdf(download);
+
+      let result: Record<string, any>;
+      if (download.skipped) {
+        // Filename was pre-identified as known — no download, no hash check needed.
+        this.logger.warn(`[PDF Sync] Pre-check skipped (known): ${download.pdfName}`);
+        result = { status: 'duplicate', pdfName: download.pdfName };
+      } else {
+        this.logger.log(`[PDF Sync] Processing: ${download.pdfName}`);
+        result = await this.ingestDownloadedPdf(download);
+      }
+
       results.push(result);
       if (result.status === 'duplicate') {
-        this.logger.log('[PDF Sync] Duplicate hit — stopping scan.');
-        break;
+        consecutiveDuplicates++;
+        if (consecutiveDuplicates >= stopAfterConsecutive) {
+          this.logger.log(`[PDF Sync] ${consecutiveDuplicates} consecutive duplicates — stopping scan.`);
+          break;
+        }
+        this.logger.log('[PDF Sync] Duplicate — continuing to check older PDFs.');
+      } else {
+        consecutiveDuplicates = 0;
       }
     }
 
@@ -124,23 +148,33 @@ export class PdfSyncService {
       scanned,
       imported: results.filter((r) => r.status === 'imported').length,
       skipped:  results.filter((r) => r.status === 'duplicate').length,
+      failed:   results.filter((r) => r.status === 'failed').length,
       results,
     };
     this.logger.log(
-      `[PDF Sync] Sync complete. scanned=${summary.scanned}, imported=${summary.imported}, skipped=${summary.skipped}`,
+      `[PDF Sync] Sync complete. scanned=${summary.scanned}, imported=${summary.imported}, skipped=${summary.skipped}, failed=${summary.failed}`,
     );
     return summary;
   }
 
   // ── Core import pipeline ───────────────────────────────────────────────────
 
+  private async loadKnownFilenames(): Promise<Set<string>> {
+    const supabase = this.supabaseService.getClient();
+    const { data } = await supabase
+      .from('flixbus_data')
+      .select('source_filename')
+      .not('source_filename', 'is', null);
+    return new Set((data ?? []).map((r) => r.source_filename).filter(Boolean));
+  }
+
   private async ingestDownloadedPdf(download: DownloadedPdf) {
     const pdfName = download.pdfName || basename(download.filePath);
     const buffer  = readFileSync(download.filePath);
-    return this.importPdfBuffer(buffer, pdfName);
+    return this.importPdfBuffer(buffer, pdfName, download.sourceFilename, download.filePath);
   }
 
-  private async importPdfBuffer(buffer: Buffer, pdfName: string) {
+  private async importPdfBuffer(buffer: Buffer, pdfName: string, sourceFilename?: string, filePath?: string) {
     const pdfHash  = this.hashBuffer(buffer);
     const supabase = this.supabaseService.getClient();
 
@@ -157,7 +191,9 @@ export class PdfSyncService {
 
     let parsed: FlixBusParsed;
     try {
-      parsed = await this.parser.parse(buffer);
+      parsed = filePath
+        ? await this.parser.parseFile(filePath)
+        : await this.parser.parse(buffer);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[PDF Sync] Parse failed for ${pdfName}: ${message}`);
@@ -175,8 +211,9 @@ export class PdfSyncService {
         departure:      parsed.departure,
         arrival:        parsed.arrival,
         driver_details: parsed.driver_details,
-        seat_details:   parsed.seat_details,
-        pdf_hash:       pdfHash,
+        seat_details:      parsed.seat_details,
+        pdf_hash:          pdfHash,
+        source_filename:   sourceFilename ?? null,
       })
       .select('id')
       .single();

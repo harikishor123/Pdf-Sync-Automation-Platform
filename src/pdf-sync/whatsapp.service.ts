@@ -1,12 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import type { BrowserContext, Download, Locator, Page } from 'playwright';
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { existsSync, mkdirSync } from "fs";
+import { join } from "path";
+import type { BrowserContext, Download, Locator, Page } from "playwright";
 
 export interface DownloadedPdf {
   filePath: string;
   pdfName: string;
+  sourceFilename: string;  // original WhatsApp filename (UUID per send)
+  skipped?: boolean;       // true = pre-identified as known, download was not needed
 }
 
 @Injectable()
@@ -24,80 +26,87 @@ export class WhatsAppService {
   // a duplicate hash, which closes the generator and triggers the finally
   // block — so the browser always shuts down cleanly.
 
-  async *streamPdfsNewestFirst(): AsyncGenerator<DownloadedPdf> {
-    this.logger.log('[PDF Sync] Starting');
+  async *streamPdfsNewestFirst(
+    preCheck?: (filename: string) => Promise<boolean>,
+  ): AsyncGenerator<DownloadedPdf> {
+    this.logger.log("[PDF Sync] Starting");
 
-    const groupName = this.configService.get<string>('PDF_SYNC_WHATSAPP_GROUP');
+    const groupName = this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUP");
     if (!groupName) {
-      this.logger.warn('[PDF Sync] PDF_SYNC_WHATSAPP_GROUP not set. Skipping.');
+      this.logger.warn("[PDF Sync] PDF_SYNC_WHATSAPP_GROUP not set. Skipping.");
       return;
     }
 
     const debug = this.isDebugEnabled();
-    const { chromium } = await import('playwright');
+    const { chromium } = await import("playwright");
 
     const sessionDir = this.ensureDir(
-      this.configService.get<string>('PDF_SYNC_WHATSAPP_SESSION_DIR') ??
-        join(process.cwd(), '.runtime', 'pdf-sync', 'whatsapp-session'),
+      this.configService.get<string>("PDF_SYNC_WHATSAPP_SESSION_DIR") ??
+        join(process.cwd(), ".runtime", "pdf-sync", "whatsapp-session"),
     );
     const downloadDir = this.ensureDir(
-      this.configService.get<string>('PDF_SYNC_DOWNLOAD_DIR') ??
-        join(process.cwd(), '.runtime', 'pdf-sync', 'downloads'),
+      this.configService.get<string>("PDF_SYNC_DOWNLOAD_DIR") ??
+        join(process.cwd(), ".runtime", "pdf-sync", "downloads"),
     );
     const headless =
-      this.configService.get<string>('PDF_SYNC_HEADLESS') === 'true';
+      this.configService.get<string>("PDF_SYNC_HEADLESS") === "true";
 
     const context = await chromium.launchPersistentContext(sessionDir, {
       acceptDownloads: true,
       headless,
       downloadsPath: downloadDir,
       args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
       ],
       userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     });
 
     // Hide the Playwright/Chromium automation fingerprint so WhatsApp Web
     // does not detect headless mode and force a QR re-scan.
     await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     });
 
     try {
       const page = context.pages()[0] ?? (await context.newPage());
       page.setDefaultTimeout(30000);
 
-      await page.goto('https://web.whatsapp.com', {
-        waitUntil: 'domcontentloaded',
+      await page.goto("https://web.whatsapp.com", {
+        waitUntil: "domcontentloaded",
       });
 
       // ── Step 1: Confirm session is authenticated ──────────────────────
       const loginState = await this.waitForLoginState(page);
-      if (loginState !== 'logged-in') {
+      if (loginState !== "logged-in") {
         throw new Error(
-          'WhatsApp session is not authenticated. ' +
-            'Set PDF_SYNC_HEADLESS=false and scan the QR code first.',
+          "WhatsApp session is not authenticated. " +
+            "Set PDF_SYNC_HEADLESS=false and scan the QR code first.",
         );
       }
 
       // ── Step 2: Open the target group chat ─────────────────────────────
       await this.openGroupChat(page, groupName);
-      this.logger.log('[PDF Sync] Group opened');
+      this.logger.log("[PDF Sync] Group opened");
 
       // ── Step 3: Scan PDFs newest → oldest, yield each before moving on ─
       const debugDir = debug
         ? this.ensureDir(
-            this.configService.get<string>('PDF_SYNC_DEBUG_DIR') ??
-              join(process.cwd(), '.runtime', 'pdf-sync', 'debug'),
+            this.configService.get<string>("PDF_SYNC_DEBUG_DIR") ??
+              join(process.cwd(), ".runtime", "pdf-sync", "debug"),
           )
         : null;
 
+      // Scroll up so that PDFs buried under recent text messages are rendered
+      // into the DOM before we count them. WhatsApp Web is virtualized — only
+      // messages near the current scroll position exist in the DOM at all.
+      await this.scrollUpToRevealPDFs(page);
+
       if (debug && debugDir) {
-        await this.debugScreenshot(page, debugDir, 'whatsapp-chat-view.png');
+        await this.debugScreenshot(page, debugDir, "whatsapp-chat-view.png");
         await this.debugDumpCandidates(page);
       }
 
@@ -107,10 +116,10 @@ export class WhatsAppService {
 
       if (pdfCount === 0) {
         this.logger.warn(
-          '[PDF Sync] No PDFs found in chat view.' +
+          "[PDF Sync] No PDFs found in chat view." +
             (debug && debugDir
               ? ` See debug screenshots in ${debugDir}`
-              : ' Enable PDF_SYNC_DEBUG=true for diagnostics.'),
+              : " Enable PDF_SYNC_DEBUG=true for diagnostics."),
         );
         return;
       }
@@ -134,6 +143,17 @@ export class WhatsAppService {
         await pdfCard.scrollIntoViewIfNeeded().catch(() => undefined);
         await page.waitForTimeout(500);
 
+        // Read the WhatsApp filename from the card DOM before downloading.
+        // If the caller already has this filename in DB, skip the download entirely.
+        const sourceFilename = await this.readCardFilename(pdfCard);
+        if (sourceFilename && preCheck && (await preCheck(sourceFilename))) {
+          this.logger.log(
+            `[PDF Sync] Card ${cardNumber}/${pdfCount}: known filename "${sourceFilename}" — skipping download.`,
+          );
+          yield { filePath: "", pdfName: sourceFilename, sourceFilename, skipped: true };
+          continue; // no overlay to dismiss — card was never clicked
+        }
+
         const download = await this.downloadOnePdfCard(
           page,
           context,
@@ -149,7 +169,7 @@ export class WhatsAppService {
           const filePath = join(downloadDir, fileName);
           await download.saveAs(filePath);
           this.logger.log(`[PDF Sync] Downloaded: ${fileName}`);
-          yield { filePath, pdfName: fileName };
+          yield { filePath, pdfName: fileName, sourceFilename: sourceFilename ?? suggested };
         } else {
           this.logger.warn(
             `[PDF Sync] Card ${cardNumber}/${pdfCount} had no downloadable file; skipping.`,
@@ -157,7 +177,7 @@ export class WhatsAppService {
         }
 
         // Dismiss the preview overlay before moving to the next card.
-        await page.keyboard.press('Escape');
+        await page.keyboard.press("Escape");
         await page.waitForTimeout(500);
       }
     } catch (err) {
@@ -174,21 +194,21 @@ export class WhatsAppService {
   // Step 1 — Wait for login or QR
   // ─────────────────────────────────────────────
 
-  private async waitForLoginState(page: Page): Promise<'logged-in' | 'qr'> {
+  private async waitForLoginState(page: Page): Promise<"logged-in" | "qr"> {
     const qr = 'canvas[aria-label*="Scan me"]';
     const chatList = 'div[data-testid="chat-list"]';
 
     try {
       await page.waitForSelector(`${qr}, ${chatList}`, { timeout: 60000 });
     } catch {
-      return 'qr';
+      return "qr";
     }
 
     const isQr = await page
       .locator(qr)
       .isVisible()
       .catch(() => false);
-    return isQr ? 'qr' : 'logged-in';
+    return isQr ? "qr" : "logged-in";
   }
 
   // ─────────────────────────────────────────────
@@ -204,10 +224,10 @@ export class WhatsAppService {
       'input[aria-label="Search or start a new chat"]',
       'input[type="text"][data-tab="3"]',
       'div[data-testid="chat-list-search-container"] input',
-    ].join(', ');
+    ].join(", ");
 
     const searchBox = page.locator(searchBoxSelector).first();
-    await searchBox.waitFor({ state: 'visible', timeout: 15000 });
+    await searchBox.waitFor({ state: "visible", timeout: 15000 });
     await searchBox.click();
     await searchBox.fill(groupName);
 
@@ -219,7 +239,7 @@ export class WhatsAppService {
     } catch {
       throw new Error(
         `[PDF Sync] No search results appeared for "${groupName}". ` +
-          'Check that PDF_SYNC_WHATSAPP_GROUP matches the exact group name in WhatsApp.',
+          "Check that PDF_SYNC_WHATSAPP_GROUP matches the exact group name in WhatsApp.",
       );
     }
 
@@ -230,7 +250,7 @@ export class WhatsAppService {
     if ((await matchingResult.count()) === 0) {
       throw new Error(
         `[PDF Sync] Group "${groupName}" not found in search results. ` +
-          'Verify the group name in PDF_SYNC_WHATSAPP_GROUP.',
+          "Verify the group name in PDF_SYNC_WHATSAPP_GROUP.",
       );
     }
 
@@ -241,6 +261,97 @@ export class WhatsAppService {
 
     // Give the message list a moment to render before scanning for PDFs.
     await page.waitForTimeout(2000);
+  }
+
+  // ─────────────────────────────────────────────
+  // Read the WhatsApp filename from a card's DOM without downloading
+  // ─────────────────────────────────────────────
+
+  private async readCardFilename(pdfCard: Locator): Promise<string | null> {
+    try {
+      return await pdfCard.evaluate((el: Element) => {
+        const container =
+          el.closest('[role="row"]') ??
+          el.closest('[data-testid*="msg"]') ??
+          el.parentElement?.parentElement?.parentElement;
+        if (!container) return null;
+
+        // Prefer a span with a title attribute ending in .pdf
+        const titled = container.querySelector<HTMLElement>('span[title]');
+        if (titled?.title?.toLowerCase().endsWith('.pdf')) return titled.title;
+
+        // Fall back to any span whose visible text looks like a filename
+        const spans = Array.from(container.querySelectorAll('span'));
+        const match = spans.find((s) =>
+          s.textContent?.trim().toLowerCase().endsWith('.pdf'),
+        );
+        return match?.textContent?.trim() ?? null;
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Scroll up to reveal PDFs buried under recent text messages
+  // ─────────────────────────────────────────────
+
+  private async scrollUpToRevealPDFs(page: Page): Promise<void> {
+    // Fast path: PDFs already visible — no scrolling needed.
+    const initial = await page
+      .locator('div[data-testid="document-thumb"]')
+      .count();
+    if (initial > 0) {
+      this.logger.log(
+        `[PDF Sync] ${initial} PDF card(s) already visible — no scroll needed.`,
+      );
+      return;
+    }
+
+    // Find the scrollable message container.
+    const containerSelectors = [
+      'div[data-testid="msg-container"]',
+      '#main div[tabindex="-1"]',
+      '#main .copyable-area',
+    ];
+    let container = null;
+    for (const sel of containerSelectors) {
+      const el = page.locator(sel).first();
+      if ((await el.count()) > 0 && (await el.isVisible().catch(() => false))) {
+        container = el;
+        break;
+      }
+    }
+
+    if (!container) {
+      this.logger.warn(
+        "[PDF Sync] Could not find scroll container — PDFs may be missed if buried under text messages.",
+      );
+      return;
+    }
+
+    // Scroll up one step at a time and stop the moment a PDF card appears.
+    // Each step covers ~1500 px; 10 steps = ~15 000 px of history.
+    for (let step = 1; step <= 10; step++) {
+      await container
+        .evaluate((el: Element) => {
+          (el as HTMLElement).scrollTop -= 1500;
+        })
+        .catch(() => undefined);
+      await page.waitForTimeout(400);
+
+      const count = await page
+        .locator('div[data-testid="document-thumb"]')
+        .count();
+      if (count > 0) {
+        this.logger.log(
+          `[PDF Sync] Found ${count} PDF card(s) after ${step} scroll step(s).`,
+        );
+        return;
+      }
+    }
+
+    this.logger.warn("[PDF Sync] No PDFs found after scrolling up 15 000 px.");
   }
 
   // ─────────────────────────────────────────────
@@ -264,7 +375,7 @@ export class WhatsAppService {
     }
 
     const cardClickDownload = context
-      .waitForEvent('download', { timeout: 5000 })
+      .waitForEvent("download", { timeout: 5000 })
       .catch(() => null);
     await pdfCard.click();
     const directDownload = await cardClickDownload;
@@ -301,7 +412,7 @@ export class WhatsAppService {
           : false;
 
       if (visible) {
-        const downloadPromise = context.waitForEvent('download', {
+        const downloadPromise = context.waitForEvent("download", {
           timeout: 20000,
         });
         await btn.click();
@@ -333,7 +444,7 @@ export class WhatsAppService {
   // ─────────────────────────────────────────────
 
   private isDebugEnabled(): boolean {
-    return this.configService.get<string>('PDF_SYNC_DEBUG') === 'true';
+    return this.configService.get<string>("PDF_SYNC_DEBUG") === "true";
   }
 
   private async debugScreenshot(
@@ -360,11 +471,11 @@ export class WhatsAppService {
       'div[role="row"] (message rows)': 'div[role="row"]',
     };
 
-    this.logger.debug('[PDF Sync][DEBUG] ── Candidate element dump ──');
+    this.logger.debug("[PDF Sync][DEBUG] ── Candidate element dump ──");
     for (const [label, selector] of Object.entries(candidates)) {
       await this.debugLogLocator(page.locator(selector), label);
     }
-    this.logger.debug('[PDF Sync][DEBUG] ── End candidate dump ──');
+    this.logger.debug("[PDF Sync][DEBUG] ── End candidate dump ──");
   }
 
   private async debugDumpOverlayCandidates(page: Page): Promise<void> {
@@ -376,11 +487,11 @@ export class WhatsAppService {
       '*[data-testid*="download" i]',
     ];
 
-    this.logger.debug('[PDF Sync][DEBUG] ── Preview overlay candidate dump ──');
+    this.logger.debug("[PDF Sync][DEBUG] ── Preview overlay candidate dump ──");
     for (const selector of candidates) {
       await this.debugLogLocator(page.locator(selector), selector);
     }
-    this.logger.debug('[PDF Sync][DEBUG] ── End preview overlay dump ──');
+    this.logger.debug("[PDF Sync][DEBUG] ── End preview overlay dump ──");
   }
 
   private async debugLogLocator(
@@ -400,10 +511,10 @@ export class WhatsAppService {
             .evaluate((node) => node.outerHTML)
             .catch(() => null);
           this.logger.debug(
-            `[PDF Sync][DEBUG]   [${i}] textContent="${(text ?? '').trim().slice(0, 120)}"`,
+            `[PDF Sync][DEBUG]   [${i}] textContent="${(text ?? "").trim().slice(0, 120)}"`,
           );
           this.logger.debug(
-            `[PDF Sync][DEBUG]   [${i}] outerHTML="${(html ?? '').slice(0, 400)}"`,
+            `[PDF Sync][DEBUG]   [${i}] outerHTML="${(html ?? "").slice(0, 400)}"`,
           );
         }
       }
@@ -425,9 +536,9 @@ export class WhatsAppService {
 
   private uniqueFileName(dir: string, suggested: string): string {
     if (!existsSync(join(dir, suggested))) return suggested;
-    const dot = suggested.lastIndexOf('.');
+    const dot = suggested.lastIndexOf(".");
     const base = dot === -1 ? suggested : suggested.slice(0, dot);
-    const ext = dot === -1 ? '' : suggested.slice(dot);
+    const ext = dot === -1 ? "" : suggested.slice(dot);
     return `${base}-${Date.now()}${ext}`;
   }
 }
