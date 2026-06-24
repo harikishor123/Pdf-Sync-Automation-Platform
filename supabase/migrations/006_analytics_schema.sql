@@ -1,14 +1,18 @@
 -- =============================================================================
--- PDF Sync – Complete Supabase Schema  (v2 — analytics redesign)
--- Run once on a new project: SQL Editor → Run.
--- Safe to re-run: all statements use IF NOT EXISTS / OR REPLACE.
+-- Migration 006: Production Analytics Schema
+--
+-- Replaces the flat flixbus_data table with a normalized star schema.
+-- flixbus_data is kept intact; run 007 to migrate its rows across.
+--
+-- Star schema:
+--   Dimensions : bus_partners, routes, vehicles, drivers, booking_sources
+--   Fact       : trips  (one row per PDF)
+--   Bridges    : trip_drivers, trip_passengers
 -- =============================================================================
 
-create extension if not exists "pgcrypto";
-
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 -- DIMENSIONS
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create table if not exists public.bus_partners (
   id         uuid        primary key default gen_random_uuid(),
@@ -30,6 +34,8 @@ create table if not exists public.vehicles (
   created_at timestamptz not null default now()
 );
 
+-- NULLS NOT DISTINCT: (name, NULL) treated as a duplicate of another (name, NULL).
+-- Requires PostgreSQL 15+ (all current Supabase projects qualify).
 create table if not exists public.drivers (
   id         uuid        primary key default gen_random_uuid(),
   name       text        not null,
@@ -44,9 +50,9 @@ create table if not exists public.booking_sources (
   created_at timestamptz not null default now()
 );
 
--- =============================================================================
--- FACT TABLE  —  one row per imported PDF
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
+-- FACT TABLE
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create table if not exists public.trips (
   id              uuid        primary key default gen_random_uuid(),
@@ -56,8 +62,8 @@ create table if not exists public.trips (
   trip_date       date,
   departure_time  time,
   arrival_time    time,
-  pdf_hash        text        unique,      -- SHA-256; authoritative dedup
-  source_filename text,                    -- WhatsApp UUID; fast pre-download dedup
+  pdf_hash        text        unique,
+  source_filename text,
   created_at      timestamptz not null default now()
 );
 
@@ -65,9 +71,9 @@ create unique index if not exists trips_source_filename_idx
   on public.trips (source_filename)
   where source_filename is not null;
 
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 -- BRIDGE TABLES
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create table if not exists public.trip_drivers (
   id         uuid        primary key default gen_random_uuid(),
@@ -88,9 +94,9 @@ create table if not exists public.trip_passengers (
   created_at        timestamptz not null default now()
 );
 
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 -- INDEXES
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create index if not exists trips_trip_date_idx     on public.trips (trip_date desc);
 create index if not exists trips_route_id_idx      on public.trips (route_id);
@@ -107,10 +113,9 @@ create index if not exists trip_pax_phone_idx      on public.trip_passengers (ph
 create index if not exists trip_pax_source_idx     on public.trip_passengers (booking_source_id)
   where booking_source_id is not null;
 
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 -- ROW LEVEL SECURITY
--- Service role key bypasses RLS. No policies = anon/authenticated cannot access.
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 
 alter table public.bus_partners    enable row level security;
 alter table public.routes          enable row level security;
@@ -121,10 +126,11 @@ alter table public.trips           enable row level security;
 alter table public.trip_drivers    enable row level security;
 alter table public.trip_passengers enable row level security;
 
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 -- ANALYTICS VIEWS
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
 
+-- Full trip details — denormalized for dashboards and the getImports API.
 create or replace view public.v_trip_summary as
 select
   t.id,
@@ -146,6 +152,7 @@ left join public.trip_passengers tp on tp.trip_id = t.id
 left join public.trip_drivers    td on td.trip_id = t.id
 group by t.id, r.departure, r.arrival, v.plate, bp.name;
 
+-- Per-driver aggregates.
 create or replace view public.v_driver_stats as
 select
   d.id,
@@ -165,6 +172,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by d.id, d.name, d.phone;
 
+-- Driver x route: how many trips each driver ran on each route.
 create or replace view public.v_driver_routes as
 select
   d.id                       as driver_id,
@@ -178,6 +186,7 @@ join public.trips t         on t.id = td.trip_id
 join public.routes r        on r.id = t.route_id
 group by d.id, d.name, r.departure, r.arrival;
 
+-- Per-vehicle aggregates.
 create or replace view public.v_vehicle_stats as
 select
   v.id,
@@ -195,6 +204,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by v.id, v.plate;
 
+-- Per-route aggregates.
 create or replace view public.v_route_stats as
 select
   r.id,
@@ -212,6 +222,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by r.id, r.departure, r.arrival;
 
+-- Per-partner aggregates.
 create or replace view public.v_partner_stats as
 select
   bp.id,
@@ -226,7 +237,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by bp.id, bp.name;
 
--- Primary feed for AI demand prediction models.
+-- Monthly trends by route — primary feed for AI demand prediction.
 create or replace view public.v_monthly_trends as
 select
   date_trunc('month', t.trip_date)::date as month,
@@ -244,6 +255,7 @@ where t.trip_date is not null
 group by date_trunc('month', t.trip_date), r.departure, r.arrival
 order by month desc;
 
+-- Booking source breakdown.
 create or replace view public.v_booking_source_stats as
 select
   coalesce(bs.name, 'Unknown')    as source,
@@ -254,13 +266,14 @@ from public.trip_passengers tp
 left join public.booking_sources bs on bs.id = tp.booking_source_id
 group by bs.name;
 
+-- Repeat passengers identified by phone number.
 create or replace view public.v_repeat_passengers as
 select
   tp.phone,
-  count(distinct tp.trip_id)::int  as trip_count,
-  min(t.trip_date)                 as first_seen,
-  max(t.trip_date)                 as last_seen,
-  count(distinct t.route_id)::int  as routes_taken
+  count(distinct tp.trip_id)::int   as trip_count,
+  min(t.trip_date)                  as first_seen,
+  max(t.trip_date)                  as last_seen,
+  count(distinct t.route_id)::int   as routes_taken
 from public.trip_passengers tp
 join public.trips t on t.id = tp.trip_id
 where tp.phone is not null and tp.phone <> ''

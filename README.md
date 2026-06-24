@@ -4,40 +4,43 @@
   <img src="https://img.shields.io/badge/NestJS-v11-E0234E?style=for-the-badge&logo=nestjs&logoColor=white" alt="NestJS" />
   <img src="https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Playwright-1.57-2EAD33?style=for-the-badge&logo=playwright&logoColor=white" alt="Playwright" />
+  <img src="https://img.shields.io/badge/Python-pdfplumber-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white" alt="Supabase" />
   <img src="https://img.shields.io/badge/Node.js-22-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js" />
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="License" />
 </p>
 
 <p align="center">
-  <strong>End-to-end automation pipeline that monitors a WhatsApp group, extracts passenger manifests from FlixBus PDFs, deduplicates them with SHA-256 hashing, and stores structured data in Supabase — all observable through a live monitoring dashboard.</strong>
+  <strong>End-to-end automation pipeline that monitors a WhatsApp group, extracts passenger manifests from FlixBus PDFs, and stores structured data in a normalized analytics-ready database — fully unattended.</strong>
 </p>
 
 ---
 
 ## Overview
 
-PDF Sync is a **production-grade automation system** built with NestJS that eliminates the manual overhead of processing FlixBus passenger manifest PDFs shared over WhatsApp. The platform uses Playwright-driven WhatsApp Web automation to watch a designated group, intercepts PDF attachments as soon as they arrive, runs them through a multi-stage normalization and parsing pipeline, and persists clean structured records to Supabase — rejecting duplicates via SHA-256 content hashing before a single row is written.
+PDF Sync is a **production-grade automation system** built with NestJS that eliminates the manual overhead of processing FlixBus passenger manifest PDFs shared over WhatsApp. The platform uses Playwright-driven WhatsApp Web automation to watch a designated group, intercepts PDF attachments as they arrive, parses them using a Python `pdfplumber` subprocess for coordinate-aware table extraction, and persists clean relational records to Supabase.
 
-A built-in monitoring dashboard provides real-time visibility into every import, hash check, and scheduling event, making it audit-ready out of the box.
+Duplicate PDFs are rejected through a two-layer strategy: a pre-download filename check skips already-known files before any download occurs, and a SHA-256 hash check catches content-identical PDFs re-sent under different filenames.
 
-> Built as a real-world automation project to demonstrate backend engineering depth across browser automation, document parsing, database integration, and scheduled task orchestration.
+The normalized star schema unlocks analytics queries — driver performance, route trends, vehicle utilization, repeat passengers — that a flat table makes impossible.
+
+> Built as a real-world automation project to demonstrate backend engineering depth across browser automation, document parsing, relational database design, and scheduled task orchestration.
 
 ---
 
 ## Features
 
-| Feature                         | Description                                                                                           |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **WhatsApp PDF Retrieval**      | Playwright drives WhatsApp Web to detect and download PDF attachments from a specified group          |
-| **Persistent Session**          | Browser session state is preserved across restarts — no repeated QR scans                             |
-| **Headless Execution**          | Runs fully headless in server and CI environments                                                     |
-| **PDF Normalization Pipeline**  | Raw PDF text is cleaned, whitespace-normalised, and segmented before parsing                          |
-| **Structured Data Extraction**  | Passenger details, seat assignments, driver info, routes, and times are parsed from unstructured text |
-| **SHA-256 Duplicate Detection** | PDF binary content is hashed before ingestion; duplicates are rejected without touching the database  |
-| **Supabase Integration**        | Structured records are stored in a typed PostgreSQL schema via `@supabase/supabase-js`                |
-| **Monitoring Dashboard**        | Live web dashboard at `/monitor` surfaces import history, hash logs, and system status                |
-| **Automated Scheduler**         | Cron-based scheduler polls for new PDFs on a configurable daily schedule                              |
+| Feature | Description |
+| --- | --- |
+| **WhatsApp PDF Retrieval** | Playwright drives WhatsApp Web to detect and download PDF attachments from a specified group |
+| **Persistent Session** | Browser session state is preserved across restarts — no repeated QR scans |
+| **Headless Execution** | Runs fully headless in server and CI environments |
+| **Coordinate-aware PDF Parsing** | Python `pdfplumber` extracts table cells by physical position — no regex fragility from flattened text |
+| **Two-layer Duplicate Detection** | Pre-download filename check + post-download SHA-256 hash check |
+| **Normalized Star Schema** | 8 relational tables: trips, drivers, vehicles, routes, passengers, partners |
+| **8 Analytics Views** | Pre-built SQL views for driver stats, route trends, vehicle utilization, repeat passengers |
+| **Supabase Integration** | Structured records stored in typed PostgreSQL via `@supabase/supabase-js` v2 |
+| **Automated Scheduler** | Daily sync at a configurable time — no fixed interval, fires at the same clock time daily |
 
 ---
 
@@ -47,52 +50,49 @@ A built-in monitoring dashboard provides real-time visibility into every import,
 WhatsApp Group
       │
       ▼
- Detect PDF Attachment          ← WhatsAppService (Playwright)
+WhatsAppService (Playwright)
+      │  async generator — yields one PDF at a time, newest first
+      │
+      ├─ Pre-download check (known filename? → skip, no download)
       │
       ▼
- Download PDF Binary            ← WhatsAppService
+Download PDF
+      │
+      ├─ SHA-256 hash check (duplicate content? → skip insert)
       │
       ▼
- Normalize Raw Text             ← PdfParserService
+Python subprocess: scripts/extract_pdf.py (pdfplumber)
+      │  returns structured JSON: metadata, drivers[], passengers[]
       │
       ▼
- Parse Structured Data          ← PdfParserService
-(passengers, driver, route, times)
+PdfSyncService — relational upserts
       │
-      ▼
- Generate SHA-256 Hash          ← PdfSyncService
+      ├─ upsert: bus_partners, routes, vehicles, drivers, booking_sources
       │
-      ▼
- Duplicate Check ──── exists? ──→ Skip & Log
-      │ new
-      ▼
- Store in Supabase              ← SupabaseService
+      ├─ insert: trips (FK to all dimensions)
       │
-      ▼
- Dashboard Monitoring           ← MonitorController → GET /monitor
+      └─ insert: trip_drivers, trip_passengers (bridge tables)
 ```
 
-```
-PDF Retrieval  →  Text Normalization  →  Structured Parsing  →  Dedup  →  Persist  →  Monitor
-```
+The async generator pattern lets the orchestrator stop mid-scan after 2 consecutive duplicates — without having to download every PDF first.
 
-The pipeline is driven by `PdfSyncSchedulerService` which triggers the full flow on a configurable cron schedule. Each stage is a discrete NestJS service, keeping concerns separated and each layer independently testable.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning behind every key decision.
 
 ---
 
 ## Tech Stack
 
-| Layer                  | Technology                                                                    |
-| ---------------------- | ----------------------------------------------------------------------------- |
-| **Framework**          | [NestJS](https://nestjs.com/) v11                                             |
-| **Language**           | TypeScript 5.7                                                                |
-| **Browser Automation** | [Playwright](https://playwright.dev/) v1.57                                   |
-| **PDF Parsing**        | [pdf-parse](https://www.npmjs.com/package/pdf-parse)                          |
-| **Database**           | [Supabase](https://supabase.com/) (PostgreSQL) via `@supabase/supabase-js` v2 |
-| **Hashing**            | Node.js built-in `crypto` — SHA-256                                           |
-| **Scheduler**          | NestJS `@nestjs/schedule` / cron expressions                                  |
-| **Config**             | `@nestjs/config` with `.env` validation                                       |
-| **Runtime**            | Node.js v22                                                                   |
+| Layer | Technology |
+| --- | --- |
+| **Framework** | [NestJS](https://nestjs.com/) v11 |
+| **Language** | TypeScript 5.7 |
+| **Browser Automation** | [Playwright](https://playwright.dev/) v1.57 |
+| **PDF Parsing** | Python 3 + [pdfplumber](https://github.com/jsvine/pdfplumber) (subprocess) |
+| **Database** | [Supabase](https://supabase.com/) (PostgreSQL 15) via `@supabase/supabase-js` v2 |
+| **Hashing** | Node.js built-in `crypto` — SHA-256 |
+| **Scheduler** | Custom `setTimeout` loop targeting a daily clock time |
+| **Config** | `@nestjs/config` with `.env` |
+| **Runtime** | Node.js v22 |
 
 ---
 
@@ -101,75 +101,78 @@ The pipeline is driven by `PdfSyncSchedulerService` which triggers the full flow
 ```
 pdf-sync-standalone/
 ├── src/
-│   ├── app.module.ts                   # Root module — wires everything together
-│   ├── main.ts                         # Bootstrap entrypoint
+│   ├── app.module.ts
+│   ├── main.ts
 │   │
 │   ├── pdf-sync/
-│   │   ├── pdf-sync.module.ts          # Feature module
-│   │   ├── pdf-sync.service.ts         # Orchestration — hash check + Supabase write
-│   │   ├── pdf-sync.controller.ts      # HTTP endpoints for manual triggers
-│   │   ├── pdf-sync-scheduler.service.ts  # Cron-based polling scheduler
-│   │   ├── whatsapp.service.ts         # Playwright WhatsApp Web automation
-│   │   └── pdf-parser.service.ts       # PDF normalization + structured extraction
+│   │   ├── pdf-sync.module.ts
+│   │   ├── pdf-sync.service.ts          # Orchestration — dedup + relational writes
+│   │   ├── pdf-sync.controller.ts       # HTTP endpoints
+│   │   ├── pdf-sync-scheduler.service.ts
+│   │   ├── whatsapp.service.ts          # Playwright WhatsApp Web automation
+│   │   └── pdf-parser.service.ts        # Python subprocess wrapper
 │   │
 │   ├── supabase/
-│   │   ├── supabase.module.ts
-│   │   └── supabase.service.ts         # Supabase client wrapper
+│   │   └── supabase.service.ts
 │   │
 │   ├── monitor/
-│   │   └── monitor.controller.ts       # Dashboard endpoint — GET /monitor
+│   │   └── monitor.controller.ts
 │   │
-│   └── common/                         # Shared types, guards, utilities
+│   └── common/
+│
+├── scripts/
+│   └── extract_pdf.py                   # pdfplumber table extractor
 │
 ├── supabase/
-│   └── migrations/                     # SQL migration files
+│   ├── schema.sql                       # Complete schema — safe to re-run on a fresh project
+│   └── migrations/
+│       ├── 001_initial.sql
+│       ├── ...
+│       └── 006_analytics_schema.sql     # Star schema + 8 analytics views
 │
-├── docs/                               # Additional documentation
-├── dist/                               # Compiled output (git-ignored)
+├── docs/
+│   └── ARCHITECTURE.md
+│
+├── .env.example
 ├── nest-cli.json
 ├── tsconfig.json
-├── package.json
-└── README.md
+└── package.json
 ```
 
 ---
 
 ## Installation
 
-**Prerequisites:** Node.js v18+, npm, a Supabase project, and a WhatsApp account.
+**Prerequisites:** Node.js v18+, Python 3.8+, a Supabase project, and a WhatsApp account.
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/your-username/pdf-sync-standalone.git
 cd pdf-sync-standalone
 
-# 2. Install dependencies
+# 2. Install Node dependencies
 npm install
 
-# 3. Install Playwright browsers (Chromium is used for WhatsApp Web)
+# 3. Install Playwright browser (Chromium for WhatsApp Web)
 npx playwright install chromium
 
-# 4. Configure environment variables (see section below)
+# 4. Install Python dependency
+pip3 install pdfplumber
+
+# 5. Configure environment variables
 cp .env.example .env
+# Edit .env with your Supabase URL, service role key, and WhatsApp group name
 
-# 5. Apply database migrations
-# Run the SQL files in supabase/migrations/ via the Supabase dashboard or CLI
+# 6. Apply the database schema
+# Open Supabase SQL Editor and run: supabase/schema.sql
 
-# 6. Build the project
-npm run build
-
-# 7. Start in development mode (with file watching)
+# 7. Start in development mode
 npm run start:dev
-
-# Or start the compiled production build
-npm start
 ```
 
 ---
 
 ## Environment Variables
-
-Create a `.env` file in the project root. Never commit this file.
 
 ```env
 # ── Supabase ──────────────────────────────────────────────
@@ -177,219 +180,123 @@ SUPABASE_URL=https://your-project-id.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 
 # ── WhatsApp Automation ────────────────────────────────────
-# Exact name of the WhatsApp group to monitor
-PDF_SYNC_WHATSAPP_GROUP=Pdf sync
+PDF_SYNC_WHATSAPP_GROUP=Your Group Name
 
 # ── Browser ───────────────────────────────────────────────
-# Set to false to watch the browser during development
+# false = show the browser window (useful for debugging)
 PDF_SYNC_HEADLESS=true
 
 # ── Scheduler ─────────────────────────────────────────────
 PDF_SYNC_SCHEDULER_ENABLED=true
-# 24-hour time — the daily run triggers at this local time
 PDF_SYNC_DAILY_TIME=03:00
 ```
 
-| Variable                     | Required | Description                                                     |
-| ---------------------------- | -------- | --------------------------------------------------------------- |
-| `SUPABASE_URL`               | Yes      | Your Supabase project URL                                       |
-| `SUPABASE_SERVICE_ROLE_KEY`  | Yes      | Service role key (bypasses RLS for server-side writes)          |
-| `PDF_SYNC_WHATSAPP_GROUP`    | Yes      | Exact display name of the WhatsApp group                        |
-| `PDF_SYNC_HEADLESS`          | No       | `true` for server deployments, `false` for local debugging      |
-| `PDF_SYNC_SCHEDULER_ENABLED` | No       | Enables the automatic daily sync (default: `true`)              |
-| `PDF_SYNC_DAILY_TIME`        | No       | Time to run the daily sync in `HH:MM` format (default: `03:00`) |
+| Variable | Required | Description |
+| --- | --- | --- |
+| `SUPABASE_URL` | Yes | Your Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key (bypasses RLS for server-side writes) |
+| `PDF_SYNC_WHATSAPP_GROUP` | Yes | Exact display name of the WhatsApp group to monitor |
+| `PDF_SYNC_HEADLESS` | No | `true` for server deployments, `false` to watch the browser |
+| `PDF_SYNC_SCHEDULER_ENABLED` | No | Enables automatic daily sync (default: `true`) |
+| `PDF_SYNC_DAILY_TIME` | No | Daily sync time in `HH:MM` format (default: `03:00`) |
 
 ---
 
-## Running Locally
+## API Endpoints
 
-```bash
-# Development — hot reload on file changes
-npm run start:dev
+All endpoints are prefixed with `/pdf-sync`.
 
-# Production build then run
-npm run build && npm start
-
-# Lint
-npm run lint
-```
-
-On first launch, WhatsApp Web will display a QR code in the terminal/browser. Scan it once with your phone. The session is persisted to disk so subsequent restarts do not require a re-scan.
-
----
-
-## Dashboard Access
-
-Once the server is running, open your browser to:
-
-```
-http://localhost:3000/monitor
-```
-
-The dashboard surfaces:
-
-- Import history with timestamps
-- SHA-256 hash log (accepted vs. rejected duplicates)
-- Scheduler status and next scheduled run
-- Per-record passenger and route summary
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/pdf-sync/health` | Supabase connectivity check |
+| `GET` | `/pdf-sync/summary` | Total imports and last imported trip |
+| `GET` | `/pdf-sync/imports?limit=20` | Recent trip list from the database |
+| `POST` | `/pdf-sync/sync` | Trigger a WhatsApp scan manually |
+| `POST` | `/pdf-sync/import-pdf` | Upload and import a PDF directly (multipart `file`) |
+| `POST` | `/pdf-sync/test-parse` | Parse a PDF and return the result without storing it |
 
 ---
 
 ## Database Schema
 
-**Table:** `flixbus_data`
+The database uses a **normalized star schema** optimized for analytics.
+
+```
+bus_partners ─┐
+routes        ─┤
+vehicles      ─┼──→ trips ──→ trip_drivers   ──→ drivers
+booking_sources┘         └──→ trip_passengers ──→ booking_sources
+```
+
+**8 pre-built analytics views:**
+
+| View | Answers |
+| --- | --- |
+| `v_trip_summary` | Full trip details for dashboards |
+| `v_driver_stats` | Trips, passengers, date range per driver |
+| `v_driver_routes` | Which routes each driver operates |
+| `v_vehicle_stats` | Trips and utilization per vehicle |
+| `v_route_stats` | Most/least popular routes |
+| `v_partner_stats` | Performance per bus partner |
+| `v_monthly_trends` | Passenger volume by month and route |
+| `v_repeat_passengers` | Passengers who have travelled more than once |
+
+Example queries:
 
 ```sql
-CREATE TABLE flixbus_data (
-  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  bus_partner      text,
-  plate            text,
-  date             date,
-  departure_time   time,
-  arrival_time     time,
-  departure        text,
-  arrival          text,
-  driver_details   jsonb,          -- { name, license, phone, ... }
-  seat_details     jsonb,          -- [{ seat, passenger, ... }, ...]
-  pdf_hash         text UNIQUE,    -- SHA-256 of raw PDF binary
-  created_at       timestamptz DEFAULT now()
-);
+-- Driver leaderboard
+SELECT name, total_trips, total_passengers FROM v_driver_stats ORDER BY total_trips DESC;
+
+-- Busiest routes
+SELECT departure, arrival, total_passengers FROM v_route_stats ORDER BY total_passengers DESC;
+
+-- Monthly passenger trend
+SELECT month, departure, arrival, passengers FROM v_monthly_trends;
 ```
 
-`pdf_hash` carries a `UNIQUE` constraint — the database acts as a second line of defense against duplicates even if the application-level check is bypassed.
-
-**Migrations** live in [`supabase/migrations/`](supabase/migrations/) and are applied in order.
+Full schema: [`supabase/schema.sql`](supabase/schema.sql)
 
 ---
 
-## Scheduler Configuration
+## Duplicate Detection
 
-The daily sync is powered by NestJS's `@nestjs/schedule` module. Configure the trigger time through `PDF_SYNC_DAILY_TIME` in your `.env`.
-
-```
-PDF_SYNC_DAILY_TIME=03:00   →  runs every day at 03:00 local time
-PDF_SYNC_SCHEDULER_ENABLED=false  →  disables automatic runs (manual trigger only)
-```
-
-A manual sync can always be triggered via the HTTP controller endpoint without waiting for the scheduled window.
-
----
-
-## Duplicate Detection Strategy
-
-Every PDF passes through a two-layer duplicate guard before any data is written:
+Every PDF passes through two independent checks:
 
 ```
-1. Application layer
-   └─ SHA-256 hash of the raw PDF buffer
-      └─ Query Supabase: SELECT 1 FROM flixbus_data WHERE pdf_hash = $1
-         ├─ Match found  →  log "duplicate skipped", return early
-         └─ No match     →  proceed to parse + insert
+Layer 1 — Pre-download (filename)
+  WhatsApp UUID filename loaded into a Set at sync start
+  Known filename → skip without downloading
 
-2. Database layer
-   └─ UNIQUE constraint on pdf_hash column
-      └─ Any race-condition bypass is caught at the DB level
+Layer 2 — Post-download (content)
+  SHA-256 hash of PDF binary checked against trips.pdf_hash
+  Known hash → skip insert (catches re-forwarded PDFs with new filenames)
+  Database UNIQUE constraint is a final safety net
 ```
-
-This design means:
-
-- **Re-sent PDFs** (same file forwarded twice) are always rejected.
-- **Re-processed files** after a server restart are caught without re-parsing.
-- The database constraint is a safety net — no reliance on application state alone.
 
 ---
 
 ## WhatsApp Session Management
 
-Playwright launches a Chromium instance pointed at `https://web.whatsapp.com`. Session cookies and local storage are persisted to a directory on disk so the QR scan only needs to happen once.
-
 ```
-First run   →  QR code displayed  →  scan with phone  →  session saved
+First run   →  QR code displayed  →  scan with phone  →  session saved to .runtime/
 Subsequent  →  session loaded from disk  →  no QR required
 ```
 
-**Development tip:** Set `PDF_SYNC_HEADLESS=false` to watch the browser in action and debug selector issues interactively.
+Set `PDF_SYNC_HEADLESS=false` to watch the browser and debug selector issues.
 
-**Production tip:** The session directory should be volume-mounted when running inside Docker so it survives container restarts.
-
----
-
-## Development Notes
-
-- **NestJS DI** — every stage of the pipeline (WhatsApp, PDF parsing, Supabase, scheduling) is a separate injectable service. Swap or mock any layer independently.
-- **Typed configuration** — `@nestjs/config` with a typed config schema means misconfigured environments fail at startup, not at runtime.
-- **JSONB flexibility** — `driver_details` and `seat_details` are stored as JSONB to accommodate variation in PDF formats without schema migrations.
-- **Headless Chromium** — Playwright manages its own browser binary; no system Chrome installation is required.
+In Docker, volume-mount the `.runtime/` directory so the session survives container restarts.
 
 ---
-
-## Lessons Learned
-
-### WhatsApp Automation
-
-WhatsApp Web's DOM is heavily obfuscated and changes without notice. Building reliable selectors required a combination of `aria-label` attributes, text content matching, and fallback strategies. Session persistence was critical — losing a session mid-run would stall the pipeline silently.
-
-### PDF Normalization
-
-FlixBus PDFs are generated from a template but contain inconsistent whitespace, ligatures, and line breaks depending on the route and passenger count. A multi-pass normalization step (whitespace collapsing, character substitution, section boundary detection) was necessary before regex-based field extraction became reliable.
-
-### Duplicate Detection
-
-An early version relied solely on filename matching — which failed immediately because WhatsApp renames files on download. Switching to SHA-256 hashing of the raw binary made deduplication content-addressed and filename-agnostic. Adding the database `UNIQUE` constraint as a second layer eliminated any race conditions from concurrent scheduler runs.
-
-### Supabase Integration
-
-Using the service role key server-side bypasses Row Level Security, which is correct for a backend pipeline but required careful thought about key management and never exposing it to any client-facing layer.
-
----
-
-## Engineering Challenges Solved
-
-### Challenge 1: WhatsApp Session Persistence
-
-Implemented Playwright persistent browser contexts to avoid repeated QR authentication.
-
-### Challenge 2: PDF Text Flattening
-
-Built a 5-stage normalization pipeline to reconstruct logical structure from flattened PDF text.
-
-### Challenge 3: Duplicate Detection
-
-Implemented SHA-256 content hashing and database-level uniqueness guarantees.
-
-### Challenge 4: Headless Browser Detection
-
-Configured Chromium launch options and runtime patches to maintain authenticated WhatsApp sessions in headless environments.
-
-## Performance
-
-- Imports PDFs in under 10 seconds
-- Handles 100+ passenger records per manifest
-- SHA-256 duplicate detection accuracy: 100%
-- Fully automated daily synchronization
 
 ## Future Improvements
 
-- [ ] Docker + Docker Compose setup for one-command deployment
-- [ ] Webhook support — push a notification to Slack/Telegram on each successful import
-- [ ] Multi-group support — monitor multiple WhatsApp groups with per-group config
-- [ ] Admin UI — a full CRUD dashboard for browsing and filtering passenger data
-- [ ] Unit and integration test suite with Jest
-- [ ] GitHub Actions CI pipeline (lint → build → test)
-- [ ] PDF format versioning — detect and handle format changes gracefully
+- [ ] Docker + Docker Compose for one-command deployment
+- [ ] Webhook notifications (Slack/Telegram) on each successful import
+- [ ] Admin UI — CRUD dashboard for browsing and filtering passenger data
 - [ ] Export endpoint — CSV/XLSX download of filtered records
-
----
-
-## Screenshots
-
-> _Screenshots coming soon. Start the server and visit `http://localhost:3000/monitor` to see the live dashboard._
-
-| View           | Description                                |
-| -------------- | ------------------------------------------ |
-| Dashboard      | Import history, hash log, scheduler status |
-| QR Scan        | First-run WhatsApp pairing screen          |
-| Supabase Table | Structured passenger records               |
+- [ ] Multi-group support — monitor multiple WhatsApp groups
+- [ ] Jest unit and integration test suite
+- [ ] GitHub Actions CI pipeline (lint → build → test)
 
 ---
 
@@ -401,6 +308,5 @@ This project is licensed under the [MIT License](LICENSE).
 
 <p align="center">
   Built by <a href="https://github.com/your-username">Harikishor</a> &nbsp;·&nbsp;
-  <a href="http://localhost:3000/monitor">Dashboard</a> &nbsp;·&nbsp;
-  <a href="TECHNICAL_HANDBOOK.md">Technical Handbook</a>
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
