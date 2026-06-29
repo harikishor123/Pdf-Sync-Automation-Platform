@@ -7,10 +7,10 @@
 create extension if not exists "pgcrypto";
 
 -- =============================================================================
--- TABLE: trips  —  one row per imported PDF
+-- TABLE: flix_trips  —  one row per imported PDF
 -- =============================================================================
 
-create table if not exists public.trips (
+create table if not exists public.flix_trips (
   id               uuid        primary key default gen_random_uuid(),
   bus_partner      text,
   plate            text,
@@ -26,14 +26,14 @@ create table if not exists public.trips (
   created_at       timestamptz not null default now()
 );
 
-create unique index if not exists trips_source_filename_idx
-  on public.trips (source_filename)
+create unique index if not exists flix_trips_source_filename_idx
+  on public.flix_trips (source_filename)
   where source_filename is not null;
 
-create index if not exists trips_date_idx    on public.trips (trip_date desc);
-create index if not exists trips_plate_idx   on public.trips (plate);
-create index if not exists trips_route_idx   on public.trips (departure, arrival);
-create index if not exists trips_partner_idx on public.trips (bus_partner);
+create index if not exists flix_trips_date_idx    on public.flix_trips (trip_date desc);
+create index if not exists flix_trips_plate_idx   on public.flix_trips (plate);
+create index if not exists flix_trips_route_idx   on public.flix_trips (departure, arrival);
+create index if not exists flix_trips_partner_idx on public.flix_trips (bus_partner);
 
 -- =============================================================================
 -- TABLE: trip_drivers  —  one row per driver per trip
@@ -41,7 +41,7 @@ create index if not exists trips_partner_idx on public.trips (bus_partner);
 
 create table if not exists public.trip_drivers (
   id          uuid        primary key default gen_random_uuid(),
-  trip_id     uuid        not null references public.trips(id) on delete cascade,
+  trip_id     uuid        not null references public.flix_trips(id) on delete cascade,
   driver_name text,
   role        text,
   phone       text,
@@ -57,7 +57,7 @@ create index if not exists trip_drivers_name_idx on public.trip_drivers (driver_
 
 create table if not exists public.trip_passengers (
   id              uuid        primary key default gen_random_uuid(),
-  trip_id         uuid        not null references public.trips(id) on delete cascade,
+  trip_id         uuid        not null references public.flix_trips(id) on delete cascade,
   seat_no         text,
   passenger_name  text,
   phone           text,
@@ -76,7 +76,7 @@ create index if not exists trip_pax_source_idx on public.trip_passengers (bookin
 -- Service role key bypasses RLS. No policies = anon/authenticated cannot access.
 -- =============================================================================
 
-alter table public.trips           enable row level security;
+alter table public.flix_trips      enable row level security;
 alter table public.trip_drivers    enable row level security;
 alter table public.trip_passengers enable row level security;
 
@@ -98,7 +98,7 @@ select
   total_passengers,
   driver_count,
   created_at
-from public.trips;
+from public.flix_trips;
 
 create or replace view public.v_driver_stats as
 select
@@ -111,7 +111,7 @@ select
   max(t.trip_date)                                      as last_trip_date,
   count(distinct date_trunc('month', t.trip_date))::int as active_months
 from public.trip_drivers td
-join public.trips t on t.id = td.trip_id
+join public.flix_trips t on t.id = td.trip_id
 left join (
   select trip_id, count(*) as cnt from public.trip_passengers group by trip_id
 ) pax on pax.trip_id = t.id
@@ -124,7 +124,7 @@ select
   t.arrival,
   count(distinct t.id)::int as trips_on_route
 from public.trip_drivers td
-join public.trips t on t.id = td.trip_id
+join public.flix_trips t on t.id = td.trip_id
 group by td.driver_name, t.departure, t.arrival;
 
 create or replace view public.v_vehicle_stats as
@@ -136,7 +136,7 @@ select
   min(t.trip_date)                                 as first_trip_date,
   max(t.trip_date)                                 as last_trip_date,
   count(distinct t.departure || t.arrival)::int    as routes_served
-from public.trips t
+from public.flix_trips t
 left join (
   select trip_id, count(*) as cnt from public.trip_passengers group by trip_id
 ) pax on pax.trip_id = t.id
@@ -151,7 +151,7 @@ select
   round(avg(pax.cnt), 1)         as avg_passengers_per_trip,
   min(t.trip_date)               as first_trip_date,
   max(t.trip_date)               as last_trip_date
-from public.trips t
+from public.flix_trips t
 left join (
   select trip_id, count(*) as cnt from public.trip_passengers group by trip_id
 ) pax on pax.trip_id = t.id
@@ -163,7 +163,7 @@ select
   count(distinct t.id)::int      as total_trips,
   coalesce(sum(pax.cnt), 0)::int as total_passengers,
   round(avg(pax.cnt), 1)         as avg_passengers_per_trip
-from public.trips t
+from public.flix_trips t
 left join (
   select trip_id, count(*) as cnt from public.trip_passengers group by trip_id
 ) pax on pax.trip_id = t.id
@@ -177,7 +177,7 @@ select
   count(distinct t.id)::int              as trips,
   coalesce(sum(pax.cnt), 0)::int         as passengers,
   round(avg(pax.cnt), 1)                 as avg_passengers
-from public.trips t
+from public.flix_trips t
 left join (
   select trip_id, count(*) as cnt from public.trip_passengers group by trip_id
 ) pax on pax.trip_id = t.id
@@ -202,7 +202,7 @@ select
   max(t.trip_date)                              as last_seen,
   count(distinct t.departure || t.arrival)::int as routes_taken
 from public.trip_passengers tp
-join public.trips t on t.id = tp.trip_id
+join public.flix_trips t on t.id = tp.trip_id
 where tp.phone is not null and tp.phone <> ''
 group by tp.phone
 having count(distinct tp.trip_id) > 1

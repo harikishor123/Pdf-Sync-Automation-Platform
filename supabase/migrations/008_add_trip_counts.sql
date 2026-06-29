@@ -5,12 +5,12 @@
 -- Storing them avoids COUNT subqueries in every analytics query.
 -- =============================================================================
 
-alter table public.trips
+alter table public.flix_trips
   add column if not exists total_passengers int,
   add column if not exists driver_count     int;
 
 -- Backfill existing rows from the bridge tables
-update public.trips t
+update public.flix_trips t
 set
   total_passengers = (select count(*) from public.trip_passengers where trip_id = t.id),
   driver_count     = (select count(*) from public.trip_drivers    where trip_id = t.id);
@@ -29,4 +29,4 @@ select
   total_passengers,
   driver_count,
   created_at
-from public.trips;
+from public.flix_trips;

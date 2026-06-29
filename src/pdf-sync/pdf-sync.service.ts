@@ -28,7 +28,7 @@ export class PdfSyncService {
   async getSummary() {
     const supabase = this.supabaseService.getClient();
     const [{ count }, { data: last }] = await Promise.all([
-      supabase.from('trips').select('id', { count: 'exact', head: true }),
+      supabase.from('flix_trips').select('id', { count: 'exact', head: true }),
       supabase
         .from('v_trip_summary')
         .select('bus_partner, plate, trip_date, created_at')
@@ -72,7 +72,7 @@ export class PdfSyncService {
     let supabaseOk = false;
     try {
       const { error } = await supabase
-        .from('trips')
+        .from('flix_trips')
         .select('id', { count: 'exact', head: true });
       supabaseOk = !error;
     } catch { /* supabase unreachable */ }
@@ -157,7 +157,7 @@ export class PdfSyncService {
   private async loadKnownFilenames(): Promise<Set<string>> {
     const supabase = this.supabaseService.getClient();
     const { data } = await supabase
-      .from('trips')
+      .from('flix_trips')
       .select('source_filename')
       .not('source_filename', 'is', null);
     return new Set((data ?? []).map((r) => r.source_filename).filter(Boolean));
@@ -180,7 +180,7 @@ export class PdfSyncService {
 
     // Layer 2 dedup: hash check (layer 1 is the pre-download filename check)
     const { data: existing } = await supabase
-      .from('trips')
+      .from('flix_trips')
       .select('id')
       .eq('pdf_hash', pdfHash)
       .maybeSingle();
@@ -203,7 +203,7 @@ export class PdfSyncService {
 
     // Insert trip row
     const { data: trip, error: tripError } = await supabase
-      .from('trips')
+      .from('flix_trips')
       .insert({
         bus_partner:      parsed.bus_partner,
         plate:            parsed.plate,
