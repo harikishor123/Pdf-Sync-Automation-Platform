@@ -212,8 +212,6 @@ export class PdfSyncService {
         arrival_time:     parsed.arrival_time,
         departure:        parsed.departure,
         arrival:          parsed.arrival,
-        total_passengers: parsed.seat_details.length,
-        driver_count:     parsed.driver_details.length,
         pdf_hash:         pdfHash,
         source_filename:  sourceFilename ?? null,
       })

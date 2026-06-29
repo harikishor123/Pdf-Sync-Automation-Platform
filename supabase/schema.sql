@@ -19,8 +19,6 @@ create table if not exists public.flix_trips (
   arrival_time     time,
   departure        text,
   arrival          text,
-  total_passengers int,
-  driver_count     int,
   pdf_hash         text        unique,      -- SHA-256; authoritative dedup
   source_filename  text,                    -- WhatsApp UUID; fast pre-download dedup
   created_at       timestamptz not null default now()
@@ -95,8 +93,6 @@ select
   arrival,
   plate,
   bus_partner,
-  total_passengers,
-  driver_count,
   created_at
 from public.flix_trips;
 
