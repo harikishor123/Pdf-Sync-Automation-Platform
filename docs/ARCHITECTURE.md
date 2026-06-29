@@ -26,10 +26,10 @@ WhatsApp Web (Playwright)
   (pdfplumber — coordinate-aware table extraction)
         │
         ▼
-  Relational upserts
-  ├── bus_partners, routes, vehicles, drivers, booking_sources
-  ├── trips (FK to all dimensions)
-  └── trip_drivers, trip_passengers (bridge tables)
+  Relational inserts
+  ├── flix_trips        (one row per PDF)
+  ├── trip_drivers      (one row per driver per trip)
+  └── trip_passengers   (one row per seat per trip)
 ```
 
 The async generator pattern (`streamPdfsNewestFirst`) lets the orchestrator control the scan — it can stop mid-stream after 2 consecutive duplicates without downloading everything first.
@@ -49,7 +49,7 @@ The tradeoff: WhatsApp Web uses a virtual DOM and only renders messages near the
 Every PDF gets checked twice:
 
 **Layer 1 — filename pre-check (before download):**  
-WhatsApp assigns a UUID filename to each file at send time. The system loads all known `source_filename` values from the DB into a Set at sync start and skips any card whose filename is already known — no download needed.
+WhatsApp assigns a UUID filename to each file at send time. The system loads all known `source_filename` values from `flix_trips` into a Set at sync start and skips any card whose filename is already known — no download needed.
 
 **Layer 2 — SHA-256 hash check (after download):**  
 The `pdf_hash` column has a unique constraint. If the same PDF is re-sent under a different filename (forwarded, re-uploaded), the hash catches it. This is the authoritative deduplication layer.
@@ -75,67 +75,76 @@ The cost is a Python subprocess per PDF. For this workload (a few PDFs per day),
 
 Downloaded PDFs already exist on disk (Playwright writes them to `.runtime/downloads/`). Passing the file path directly to the Python script avoids writing a redundant temp file. Uploaded PDFs (the manual import API endpoint) arrive as in-memory buffers — those write a temp file that is cleaned up in a `finally` block.
 
-### 6. Normalized star schema over a flat JSONB table
+### 6. Flat 3-table schema over dimension tables
 
-The original design stored `driver_details` and `seat_details` as JSONB arrays inside a single `flixbus_data` row. This works for storage but makes analytics impossible — you cannot `GROUP BY driver` or `COUNT passengers per route` on data buried inside a JSON blob.
+An earlier iteration explored a full star schema with five dimension tables (`bus_partners`, `routes`, `vehicles`, `drivers`, `booking_sources`) each storing entities by UUID. That design required async "get or create" upserts for every dimension before the fact row could be inserted, and the joins added complexity without benefit for a single-tenant workload.
 
-The redesign uses a proper star schema:
+The current design collapses everything into three tables and uses plain text columns:
 
-- **Dimensions**: `bus_partners`, `routes`, `vehicles`, `drivers`, `booking_sources` — each entity stored once and referenced by UUID
-- **Fact table**: `trips` — one row per imported PDF, foreign keys to all dimensions
-- **Bridge tables**: `trip_drivers`, `trip_passengers` — many-to-many relationships
+- **`flix_trips`** — one row per PDF; stores route, vehicle, and partner info directly as text
+- **`trip_drivers`** — one row per driver; stores name, role, and phone as text
+- **`trip_passengers`** — one row per seat; stores passenger name, phone, and booking source as text
 
-Every field is now a real column: queryable, joinable, aggregatable.
+Analytics queries (`GROUP BY plate`, `GROUP BY departure, arrival`) work identically on text columns. The service inserts into all three tables with a simple `Promise.all` and no upsert helpers.
 
 ---
 
 ## Database Schema
 
-### Dimensions
-
 ```
-bus_partners   (id, name)
-routes         (id, departure, arrival)          UNIQUE(departure, arrival)
-vehicles       (id, plate)                       UNIQUE(plate)
-drivers        (id, name, phone)                 UNIQUE NULLS NOT DISTINCT (name, phone)
-booking_sources (id, name)                       UNIQUE(name)
-```
-
-### Fact + Bridge Tables
-
-```
-trips (
-  id, route_id→routes, vehicle_id→vehicles, bus_partner_id→bus_partners,
-  trip_date, departure_time, arrival_time,
-  pdf_hash UNIQUE,        ← SHA-256, authoritative dedup
-  source_filename UNIQUE  ← WhatsApp UUID, fast pre-download dedup
+flix_trips (
+  id               uuid  PRIMARY KEY
+  bus_partner      text
+  plate            text
+  trip_date        date
+  departure_time   time
+  arrival_time     time
+  departure        text
+  arrival          text
+  pdf_hash         text  UNIQUE   ← SHA-256, authoritative dedup
+  source_filename  text  UNIQUE   ← WhatsApp UUID, fast pre-download dedup
+  created_at       timestamptz
 )
 
 trip_drivers (
-  id, trip_id→trips, driver_id→drivers, role
-  UNIQUE(trip_id, driver_id)
+  id           uuid  PRIMARY KEY
+  trip_id      uuid  → flix_trips  ON DELETE CASCADE
+  driver_name  text
+  role         text
+  phone        text
+  created_at   timestamptz
 )
 
 trip_passengers (
-  id, trip_id→trips,
-  seat_no, passenger_name, phone,
-  booking_source_id→booking_sources
+  id              uuid  PRIMARY KEY
+  trip_id         uuid  → flix_trips  ON DELETE CASCADE
+  seat_no         text
+  passenger_name  text
+  phone           text
+  booking_source  text
+  created_at      timestamptz
 )
 ```
+
+Row Level Security is enabled on all three tables. The service role key bypasses RLS; no policies are defined, so anon/authenticated clients cannot access these tables directly.
 
 ### Analytics Views
 
 | View | Purpose |
 | --- | --- |
-| `v_trip_summary` | All trip fields denormalized — used by the `GET /imports` API |
+| `v_trip_summary` | All trip fields — used by the `GET /imports` API |
 | `v_driver_stats` | Total trips, passengers, avg passengers, date range per driver |
 | `v_driver_routes` | Trip count per driver per route |
-| `v_vehicle_stats` | Total trips, passengers, routes served per vehicle |
+| `v_vehicle_stats` | Total trips, passengers, routes served per plate |
 | `v_route_stats` | Total trips, passengers, avg load per route |
 | `v_partner_stats` | Trip and passenger volume per bus partner |
-| `v_monthly_trends` | Monthly passenger volume by route — primary AI training feed |
-| `v_booking_source_stats` | Redbus vs Abhibus vs Flix breakdown |
+| `v_monthly_trends` | Monthly passenger volume by route |
+| `v_booking_source_stats` | Booking channel breakdown (Redbus, Abhibus, Flix, etc.) |
 | `v_repeat_passengers` | Passengers with more than one trip (identified by phone) |
+
+All views are dropped and recreated in `schema.sql` so re-running the file always applies the latest column definitions cleanly.
+
+Full schema: [`supabase/schema.sql`](../supabase/schema.sql)
 
 ---
 
@@ -144,7 +153,7 @@ trip_passengers (
 ```
 PdfSyncController        ← HTTP endpoints (sync, import-pdf, test-parse, summary, imports, health)
        │
-PdfSyncService           ← orchestration: dedup logic, dimension upserts, relational writes
+PdfSyncService           ← orchestration: dedup logic, batch inserts into 3 tables
        ├── WhatsAppService     ← Playwright: scroll, find PDF cards, download
        ├── PdfParserService    ← Python subprocess wrapper (parse / parseFile)
        └── SupabaseService     ← Supabase client
@@ -167,24 +176,24 @@ The sync can be triggered manually via `POST /pdf-sync/sync` or runs automatical
 ```
 src/
   pdf-sync/
-    pdf-sync.service.ts      ← orchestration, duplicate logic, relational upserts
+    pdf-sync.service.ts      ← orchestration, duplicate logic, 3-table inserts
     pdf-sync.controller.ts   ← HTTP endpoints
     pdf-parser.service.ts    ← Python subprocess wrapper
     whatsapp.service.ts      ← Playwright automation
+    pdf-sync-scheduler.service.ts
   supabase/
     supabase.service.ts      ← Supabase client
   monitor/
     monitor.controller.ts    ← health / status endpoints
   common/
-    scheduler.service.ts     ← daily time scheduler
     guards/api-key.guard.ts  ← optional API key protection
 
 scripts/
   extract_pdf.py             ← pdfplumber table extractor
+  requirements.txt
 
 supabase/
-  schema.sql                 ← complete schema, safe to re-run
-  migrations/                ← incremental migrations (001–006)
+  schema.sql                 ← complete schema, safe to re-run (no migrations)
 
 docs/
   ARCHITECTURE.md            ← this file

@@ -22,8 +22,6 @@ PDF Sync is a **production-grade automation system** built with NestJS that elim
 
 Duplicate PDFs are rejected through a two-layer strategy: a pre-download filename check skips already-known files before any download occurs, and a SHA-256 hash check catches content-identical PDFs re-sent under different filenames.
 
-The normalized star schema unlocks analytics queries — driver performance, route trends, vehicle utilization, repeat passengers — that a flat table makes impossible.
-
 > Built as a real-world automation project to demonstrate backend engineering depth across browser automation, document parsing, relational database design, and scheduled task orchestration.
 
 ---
@@ -35,12 +33,10 @@ The normalized star schema unlocks analytics queries — driver performance, rou
 | **WhatsApp PDF Retrieval** | Playwright drives WhatsApp Web to detect and download PDF attachments from a specified group |
 | **Persistent Session** | Browser session state is preserved across restarts — no repeated QR scans |
 | **Headless Execution** | Runs fully headless in server and CI environments |
-| **Coordinate-aware PDF Parsing** | Python `pdfplumber` extracts table cells by physical position — no regex fragility from flattened text |
+| **Coordinate-aware PDF Parsing** | Python `pdfplumber` extracts table cells by physical position — no regex fragility |
 | **Two-layer Duplicate Detection** | Pre-download filename check + post-download SHA-256 hash check |
-| **Normalized Star Schema** | 8 relational tables: trips, drivers, vehicles, routes, passengers, partners |
-| **8 Analytics Views** | Pre-built SQL views for driver stats, route trends, vehicle utilization, repeat passengers |
-| **Supabase Integration** | Structured records stored in typed PostgreSQL via `@supabase/supabase-js` v2 |
-| **Automated Scheduler** | Daily sync at a configurable time — no fixed interval, fires at the same clock time daily |
+| **Relational Schema** | 3 tables with 8 pre-built analytics views for drivers, routes, vehicles, and passengers |
+| **Automated Scheduler** | Daily sync at a configurable time — fires at the same clock time every day |
 
 ---
 
@@ -65,16 +61,11 @@ Python subprocess: scripts/extract_pdf.py (pdfplumber)
       │  returns structured JSON: metadata, drivers[], passengers[]
       │
       ▼
-PdfSyncService — relational upserts
-      │
-      ├─ upsert: bus_partners, routes, vehicles, drivers, booking_sources
-      │
-      ├─ insert: trips (FK to all dimensions)
-      │
-      └─ insert: trip_drivers, trip_passengers (bridge tables)
+PdfSyncService
+      ├─ insert: flix_trips
+      ├─ insert: trip_drivers
+      └─ insert: trip_passengers
 ```
-
-The async generator pattern lets the orchestrator stop mid-scan after 2 consecutive duplicates — without having to download every PDF first.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning behind every key decision.
 
@@ -103,32 +94,26 @@ pdf-sync-standalone/
 ├── src/
 │   ├── app.module.ts
 │   ├── main.ts
-│   │
 │   ├── pdf-sync/
 │   │   ├── pdf-sync.module.ts
-│   │   ├── pdf-sync.service.ts          # Orchestration — dedup + relational writes
+│   │   ├── pdf-sync.service.ts          # Orchestration — dedup + DB writes
 │   │   ├── pdf-sync.controller.ts       # HTTP endpoints
 │   │   ├── pdf-sync-scheduler.service.ts
 │   │   ├── whatsapp.service.ts          # Playwright WhatsApp Web automation
 │   │   └── pdf-parser.service.ts        # Python subprocess wrapper
-│   │
 │   ├── supabase/
 │   │   └── supabase.service.ts
-│   │
 │   ├── monitor/
 │   │   └── monitor.controller.ts
-│   │
 │   └── common/
+│       └── guards/api-key.guard.ts
 │
 ├── scripts/
-│   └── extract_pdf.py                   # pdfplumber table extractor
+│   ├── extract_pdf.py                   # pdfplumber table extractor
+│   └── requirements.txt                 # Python dependencies
 │
 ├── supabase/
-│   ├── schema.sql                       # Complete schema — safe to re-run on a fresh project
-│   └── migrations/
-│       ├── 001_initial.sql
-│       ├── ...
-│       └── 006_analytics_schema.sql     # Star schema + 8 analytics views
+│   └── schema.sql                       # Complete schema — run once on a new project
 │
 ├── docs/
 │   └── ARCHITECTURE.md
@@ -153,7 +138,7 @@ cd pdf-sync-standalone
 # 2. Install Node dependencies
 npm install
 
-# 3. Install Playwright browser (Chromium for WhatsApp Web)
+# 3. Install Playwright browser
 npx playwright install chromium
 
 # 4. Install Python dependency
@@ -161,12 +146,12 @@ pip3 install pdfplumber
 
 # 5. Configure environment variables
 cp .env.example .env
-# Edit .env with your Supabase URL, service role key, and WhatsApp group name
+# Edit .env with your Supabase credentials and WhatsApp group name
 
 # 6. Apply the database schema
-# Open Supabase SQL Editor and run: supabase/schema.sql
+# Open Supabase SQL Editor → paste and run: supabase/schema.sql
 
-# 7. Start in development mode
+# 7. Start the server
 npm run start:dev
 ```
 
@@ -175,18 +160,14 @@ npm run start:dev
 ## Environment Variables
 
 ```env
-# ── Supabase ──────────────────────────────────────────────
 SUPABASE_URL=https://your-project-id.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 
-# ── WhatsApp Automation ────────────────────────────────────
 PDF_SYNC_WHATSAPP_GROUP=Your Group Name
 
-# ── Browser ───────────────────────────────────────────────
 # false = show the browser window (useful for debugging)
 PDF_SYNC_HEADLESS=true
 
-# ── Scheduler ─────────────────────────────────────────────
 PDF_SYNC_SCHEDULER_ENABLED=true
 PDF_SYNC_DAILY_TIME=03:00
 ```
@@ -194,46 +175,59 @@ PDF_SYNC_DAILY_TIME=03:00
 | Variable | Required | Description |
 | --- | --- | --- |
 | `SUPABASE_URL` | Yes | Your Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key (bypasses RLS for server-side writes) |
-| `PDF_SYNC_WHATSAPP_GROUP` | Yes | Exact display name of the WhatsApp group to monitor |
-| `PDF_SYNC_HEADLESS` | No | `true` for server deployments, `false` to watch the browser |
-| `PDF_SYNC_SCHEDULER_ENABLED` | No | Enables automatic daily sync (default: `true`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key (bypasses RLS) |
+| `PDF_SYNC_WHATSAPP_GROUP` | Yes | Exact display name of the WhatsApp group |
+| `PDF_SYNC_HEADLESS` | No | `true` for servers, `false` to watch the browser |
+| `PDF_SYNC_SCHEDULER_ENABLED` | No | Enable automatic daily sync (default: `true`) |
 | `PDF_SYNC_DAILY_TIME` | No | Daily sync time in `HH:MM` format (default: `03:00`) |
 
 ---
 
 ## API Endpoints
 
-All endpoints are prefixed with `/pdf-sync`.
-
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/pdf-sync/health` | Supabase connectivity check |
 | `GET` | `/pdf-sync/summary` | Total imports and last imported trip |
-| `GET` | `/pdf-sync/imports?limit=20` | Recent trip list from the database |
+| `GET` | `/pdf-sync/imports?limit=20` | Recent trip list |
 | `POST` | `/pdf-sync/sync` | Trigger a WhatsApp scan manually |
 | `POST` | `/pdf-sync/import-pdf` | Upload and import a PDF directly (multipart `file`) |
-| `POST` | `/pdf-sync/test-parse` | Parse a PDF and return the result without storing it |
+| `POST` | `/pdf-sync/test-parse` | Parse a PDF and return structured data without storing |
 
 ---
 
 ## Database Schema
 
-The database uses a **normalized star schema** optimized for analytics.
+Three tables, all in `public` schema:
 
 ```
-bus_partners ─┐
-routes        ─┤
-vehicles      ─┼──→ trips ──→ trip_drivers   ──→ drivers
-booking_sources┘         └──→ trip_passengers ──→ booking_sources
+flix_trips        — one row per imported PDF
+trip_drivers      — one row per driver per trip  (FK → flix_trips)
+trip_passengers   — one row per seat per trip    (FK → flix_trips)
+```
+
+**`flix_trips`**
+```
+id, bus_partner, plate, trip_date, departure_time, arrival_time,
+departure, arrival, pdf_hash, source_filename, created_at
+```
+
+**`trip_drivers`**
+```
+id, trip_id, driver_name, role, phone, created_at
+```
+
+**`trip_passengers`**
+```
+id, trip_id, seat_no, passenger_name, phone, booking_source, created_at
 ```
 
 **8 pre-built analytics views:**
 
 | View | Answers |
 | --- | --- |
-| `v_trip_summary` | Full trip details for dashboards |
-| `v_driver_stats` | Trips, passengers, date range per driver |
+| `v_trip_summary` | All trip details in one place |
+| `v_driver_stats` | Trips, passengers, activity per driver |
 | `v_driver_routes` | Which routes each driver operates |
 | `v_vehicle_stats` | Trips and utilization per vehicle |
 | `v_route_stats` | Most/least popular routes |
@@ -241,41 +235,26 @@ booking_sources┘         └──→ trip_passengers ──→ booking_source
 | `v_monthly_trends` | Passenger volume by month and route |
 | `v_repeat_passengers` | Passengers who have travelled more than once |
 
-Example queries:
-
-```sql
--- Driver leaderboard
-SELECT name, total_trips, total_passengers FROM v_driver_stats ORDER BY total_trips DESC;
-
--- Busiest routes
-SELECT departure, arrival, total_passengers FROM v_route_stats ORDER BY total_passengers DESC;
-
--- Monthly passenger trend
-SELECT month, departure, arrival, passengers FROM v_monthly_trends;
-```
-
 Full schema: [`supabase/schema.sql`](supabase/schema.sql)
 
 ---
 
 ## Duplicate Detection
 
-Every PDF passes through two independent checks:
-
 ```
 Layer 1 — Pre-download (filename)
-  WhatsApp UUID filename loaded into a Set at sync start
-  Known filename → skip without downloading
+  WhatsApp UUID filename checked against known filenames in DB
+  Match → skip without downloading
 
 Layer 2 — Post-download (content)
-  SHA-256 hash of PDF binary checked against trips.pdf_hash
-  Known hash → skip insert (catches re-forwarded PDFs with new filenames)
+  SHA-256 hash of PDF binary checked against flix_trips.pdf_hash
+  Match → skip insert (catches re-forwarded PDFs with new filenames)
   Database UNIQUE constraint is a final safety net
 ```
 
 ---
 
-## WhatsApp Session Management
+## WhatsApp Session
 
 ```
 First run   →  QR code displayed  →  scan with phone  →  session saved to .runtime/
@@ -284,19 +263,16 @@ Subsequent  →  session loaded from disk  →  no QR required
 
 Set `PDF_SYNC_HEADLESS=false` to watch the browser and debug selector issues.
 
-In Docker, volume-mount the `.runtime/` directory so the session survives container restarts.
-
 ---
 
 ## Future Improvements
 
 - [ ] Docker + Docker Compose for one-command deployment
 - [ ] Webhook notifications (Slack/Telegram) on each successful import
-- [ ] Admin UI — CRUD dashboard for browsing and filtering passenger data
-- [ ] Export endpoint — CSV/XLSX download of filtered records
-- [ ] Multi-group support — monitor multiple WhatsApp groups
-- [ ] Jest unit and integration test suite
-- [ ] GitHub Actions CI pipeline (lint → build → test)
+- [ ] Admin dashboard for browsing and filtering passenger data
+- [ ] Export endpoint — CSV/XLSX download
+- [ ] Multi-group support
+- [ ] Jest test suite + GitHub Actions CI
 
 ---
 
