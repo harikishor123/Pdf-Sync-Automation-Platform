@@ -80,10 +80,20 @@ alter table public.trip_passengers enable row level security;
 
 -- =============================================================================
 -- ANALYTICS VIEWS
+-- Drop first so column changes are always applied cleanly on re-runs.
 -- =============================================================================
 
--- v_trip_summary uses stored counts — no JOIN or GROUP BY needed.
-create or replace view public.v_trip_summary as
+drop view if exists public.v_repeat_passengers;
+drop view if exists public.v_booking_source_stats;
+drop view if exists public.v_monthly_trends;
+drop view if exists public.v_partner_stats;
+drop view if exists public.v_route_stats;
+drop view if exists public.v_vehicle_stats;
+drop view if exists public.v_driver_routes;
+drop view if exists public.v_driver_stats;
+drop view if exists public.v_trip_summary;
+
+create view public.v_trip_summary as
 select
   id,
   trip_date,
@@ -96,7 +106,7 @@ select
   created_at
 from public.flix_trips;
 
-create or replace view public.v_driver_stats as
+create view public.v_driver_stats as
 select
   td.driver_name,
   td.phone,
@@ -113,7 +123,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by td.driver_name, td.phone;
 
-create or replace view public.v_driver_routes as
+create view public.v_driver_routes as
 select
   td.driver_name,
   t.departure,
@@ -123,7 +133,7 @@ from public.trip_drivers td
 join public.flix_trips t on t.id = td.trip_id
 group by td.driver_name, t.departure, t.arrival;
 
-create or replace view public.v_vehicle_stats as
+create view public.v_vehicle_stats as
 select
   t.plate,
   count(distinct t.id)::int                        as total_trips,
@@ -138,7 +148,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by t.plate;
 
-create or replace view public.v_route_stats as
+create view public.v_route_stats as
 select
   t.departure,
   t.arrival,
@@ -153,7 +163,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by t.departure, t.arrival;
 
-create or replace view public.v_partner_stats as
+create view public.v_partner_stats as
 select
   t.bus_partner,
   count(distinct t.id)::int      as total_trips,
@@ -165,7 +175,7 @@ left join (
 ) pax on pax.trip_id = t.id
 group by t.bus_partner;
 
-create or replace view public.v_monthly_trends as
+create view public.v_monthly_trends as
 select
   date_trunc('month', t.trip_date)::date as month,
   t.departure,
@@ -181,7 +191,7 @@ where t.trip_date is not null
 group by date_trunc('month', t.trip_date), t.departure, t.arrival
 order by month desc;
 
-create or replace view public.v_booking_source_stats as
+create view public.v_booking_source_stats as
 select
   coalesce(booking_source, 'Unknown') as source,
   count(*)::int                       as total_passengers,
@@ -190,7 +200,7 @@ select
 from public.trip_passengers
 group by booking_source;
 
-create or replace view public.v_repeat_passengers as
+create view public.v_repeat_passengers as
 select
   tp.phone,
   count(distinct tp.trip_id)::int               as trip_count,
