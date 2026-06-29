@@ -6,19 +6,6 @@
 
 create extension if not exists "pgcrypto";
 
--- =============================================================================
--- ENUM TYPES
--- =============================================================================
-
-do $$ begin
-  create type public.flix_driver_role as enum ('main_driver', 'host_India');
-exception when duplicate_object then null;
-end $$;
-
-do $$ begin
-  create type public.flix_booking_source as enum ('Redbus', 'Abhibus', 'Flix');
-exception when duplicate_object then null;
-end $$;
 
 -- =============================================================================
 -- TABLE: flix_trips  —  one row per imported PDF
@@ -42,14 +29,6 @@ create table if not exists public.flix_trips (
 alter table public.flix_trips drop column if exists total_passengers;
 alter table public.flix_trips drop column if exists driver_count;
 
--- Convert existing text columns to enum types (safe if already enum)
-alter table public.trip_drivers
-  alter column role type public.flix_driver_role
-  using role::public.flix_driver_role;
-
-alter table public.trip_passengers
-  alter column booking_source type public.flix_booking_source
-  using booking_source::public.flix_booking_source;
 
 create unique index if not exists flix_trips_source_filename_idx
   on public.flix_trips (source_filename)
@@ -68,7 +47,7 @@ create table if not exists public.trip_drivers (
   id          uuid        primary key default gen_random_uuid(),
   trip_id     uuid        not null references public.flix_trips(id) on delete cascade,
   driver_name text,
-  role        public.flix_driver_role,
+  role        text,
   phone       text,
   created_at  timestamptz not null default now()
 );
@@ -86,7 +65,7 @@ create table if not exists public.trip_passengers (
   seat_no         text,
   passenger_name  text,
   phone           text,
-  booking_source  public.flix_booking_source,
+  booking_source  text,
   created_at      timestamptz not null default now()
 );
 
