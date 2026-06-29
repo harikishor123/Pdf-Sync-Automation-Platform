@@ -11,17 +11,19 @@ create extension if not exists "pgcrypto";
 -- =============================================================================
 
 create table if not exists public.trips (
-  id              uuid        primary key default gen_random_uuid(),
-  bus_partner     text,
-  plate           text,
-  trip_date       date,
-  departure_time  time,
-  arrival_time    time,
-  departure       text,
-  arrival         text,
-  pdf_hash        text        unique,      -- SHA-256; authoritative dedup
-  source_filename text,                    -- WhatsApp UUID; fast pre-download dedup
-  created_at      timestamptz not null default now()
+  id               uuid        primary key default gen_random_uuid(),
+  bus_partner      text,
+  plate            text,
+  trip_date        date,
+  departure_time   time,
+  arrival_time     time,
+  departure        text,
+  arrival          text,
+  total_passengers int,
+  driver_count     int,
+  pdf_hash         text        unique,      -- SHA-256; authoritative dedup
+  source_filename  text,                    -- WhatsApp UUID; fast pre-download dedup
+  created_at       timestamptz not null default now()
 );
 
 create unique index if not exists trips_source_filename_idx
@@ -82,23 +84,21 @@ alter table public.trip_passengers enable row level security;
 -- ANALYTICS VIEWS
 -- =============================================================================
 
+-- v_trip_summary uses stored counts — no JOIN or GROUP BY needed.
 create or replace view public.v_trip_summary as
 select
-  t.id,
-  t.trip_date,
-  t.departure_time,
-  t.arrival_time,
-  t.departure,
-  t.arrival,
-  t.plate,
-  t.bus_partner,
-  count(distinct tp.id)::int  as passenger_count,
-  count(distinct td.id)::int  as driver_count,
-  t.created_at
-from public.trips t
-left join public.trip_passengers tp on tp.trip_id = t.id
-left join public.trip_drivers    td on td.trip_id = t.id
-group by t.id;
+  id,
+  trip_date,
+  departure_time,
+  arrival_time,
+  departure,
+  arrival,
+  plate,
+  bus_partner,
+  total_passengers,
+  driver_count,
+  created_at
+from public.trips;
 
 create or replace view public.v_driver_stats as
 select

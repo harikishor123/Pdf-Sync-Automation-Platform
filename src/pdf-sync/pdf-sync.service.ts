@@ -205,15 +205,17 @@ export class PdfSyncService {
     const { data: trip, error: tripError } = await supabase
       .from('trips')
       .insert({
-        bus_partner:     parsed.bus_partner,
-        plate:           parsed.plate,
-        trip_date:       parsed.date,
-        departure_time:  parsed.departure_time,
-        arrival_time:    parsed.arrival_time,
-        departure:       parsed.departure,
-        arrival:         parsed.arrival,
-        pdf_hash:        pdfHash,
-        source_filename: sourceFilename ?? null,
+        bus_partner:      parsed.bus_partner,
+        plate:            parsed.plate,
+        trip_date:        parsed.date,
+        departure_time:   parsed.departure_time,
+        arrival_time:     parsed.arrival_time,
+        departure:        parsed.departure,
+        arrival:          parsed.arrival,
+        total_passengers: parsed.seat_details.length,
+        driver_count:     parsed.driver_details.length,
+        pdf_hash:         pdfHash,
+        source_filename:  sourceFilename ?? null,
       })
       .select('id')
       .single();
