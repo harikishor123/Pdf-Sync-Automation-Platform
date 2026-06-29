@@ -107,8 +107,6 @@ export class PdfSyncService {
     const results: Array<Record<string, any>> = [];
     let scanned = 0;
     let consecutiveDuplicates = 0;
-    // Stop only after 2 consecutive duplicates — a single duplicate may mean a
-    // prior run was interrupted before finishing, leaving older PDFs unimported.
     const stopAfterConsecutive = 2;
 
     const knownFilenames = await this.loadKnownFilenames();
@@ -203,23 +201,17 @@ export class PdfSyncService {
       return { status: 'failed', pdfName, error: message };
     }
 
-    // Upsert all dimension rows and collect their IDs
-    const [busPartnerId, routeId, vehicleId] = await Promise.all([
-      parsed.bus_partner                        ? this.upsertBusPartner(parsed.bus_partner) : null,
-      parsed.departure && parsed.arrival        ? this.upsertRoute(parsed.departure, parsed.arrival) : null,
-      parsed.plate                              ? this.upsertVehicle(parsed.plate) : null,
-    ]);
-
-    // Insert the trip row
+    // Insert trip row
     const { data: trip, error: tripError } = await supabase
       .from('trips')
       .insert({
-        route_id:        routeId        ?? null,
-        vehicle_id:      vehicleId      ?? null,
-        bus_partner_id:  busPartnerId   ?? null,
+        bus_partner:     parsed.bus_partner,
+        plate:           parsed.plate,
         trip_date:       parsed.date,
         departure_time:  parsed.departure_time,
         arrival_time:    parsed.arrival_time,
+        departure:       parsed.departure,
+        arrival:         parsed.arrival,
         pdf_hash:        pdfHash,
         source_filename: sourceFilename ?? null,
       })
@@ -228,7 +220,7 @@ export class PdfSyncService {
 
     if (tripError) throw new InternalServerErrorException(tripError.message);
 
-    // Insert drivers and passengers (independent — run concurrently)
+    // Insert drivers and passengers concurrently
     await Promise.all([
       this.insertTripDrivers(trip.id, parsed.driver_details),
       this.insertTripPassengers(trip.id, parsed.seat_details),
@@ -238,79 +230,31 @@ export class PdfSyncService {
     return { status: 'imported', id: trip.id, pdfName, parsed };
   }
 
-  // ── Dimension upserts ──────────────────────────────────────────────────────
-
-  private async upsertBusPartner(name: string): Promise<string> {
-    const { data } = await this.supabaseService.getClient()
-      .from('bus_partners')
-      .upsert({ name }, { onConflict: 'name' })
-      .select('id')
-      .single();
-    return data!.id;
-  }
-
-  private async upsertRoute(departure: string, arrival: string): Promise<string> {
-    const { data } = await this.supabaseService.getClient()
-      .from('routes')
-      .upsert({ departure, arrival }, { onConflict: 'departure,arrival' })
-      .select('id')
-      .single();
-    return data!.id;
-  }
-
-  private async upsertVehicle(plate: string): Promise<string> {
-    const { data } = await this.supabaseService.getClient()
-      .from('vehicles')
-      .upsert({ plate }, { onConflict: 'plate' })
-      .select('id')
-      .single();
-    return data!.id;
-  }
-
-  private async upsertDriver(name: string, phone: string | null): Promise<string> {
-    const { data } = await this.supabaseService.getClient()
-      .from('drivers')
-      .upsert({ name, phone: phone || null }, { onConflict: 'name,phone' })
-      .select('id')
-      .single();
-    return data!.id;
-  }
-
-  private async upsertBookingSource(name: string): Promise<string> {
-    const { data } = await this.supabaseService.getClient()
-      .from('booking_sources')
-      .upsert({ name }, { onConflict: 'name' })
-      .select('id')
-      .single();
-    return data!.id;
-  }
-
   // ── Bridge table inserts ───────────────────────────────────────────────────
 
   private async insertTripDrivers(tripId: string, drivers: DriverDetail[]): Promise<void> {
     if (!drivers.length) return;
-    const rows = await Promise.all(
-      drivers.map(async (d) => ({
-        trip_id:   tripId,
-        driver_id: await this.upsertDriver(d.driver_name, d.phone || null),
-        role:      d.role || null,
-      })),
-    );
-    await this.supabaseService.getClient().from('trip_drivers').insert(rows);
+    await this.supabaseService.getClient()
+      .from('trip_drivers')
+      .insert(drivers.map((d) => ({
+        trip_id:     tripId,
+        driver_name: d.driver_name || null,
+        role:        d.role        || null,
+        phone:       d.phone       || null,
+      })));
   }
 
   private async insertTripPassengers(tripId: string, seats: SeatDetail[]): Promise<void> {
     if (!seats.length) return;
-    const rows = await Promise.all(
-      seats.map(async (p) => ({
-        trip_id:           tripId,
-        seat_no:           p.seat_no   || null,
-        passenger_name:    p.name      || null,
-        phone:             p.phone     || null,
-        booking_source_id: p.shop ? await this.upsertBookingSource(p.shop) : null,
-      })),
-    );
-    await this.supabaseService.getClient().from('trip_passengers').insert(rows);
+    await this.supabaseService.getClient()
+      .from('trip_passengers')
+      .insert(seats.map((p) => ({
+        trip_id:        tripId,
+        seat_no:        p.seat_no || null,
+        passenger_name: p.name    || null,
+        phone:          p.phone   || null,
+        booking_source: p.shop    || null,
+      })));
   }
 
   // ── Utilities ──────────────────────────────────────────────────────────────
