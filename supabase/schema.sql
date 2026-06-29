@@ -24,6 +24,10 @@ create table if not exists public.flix_trips (
   created_at       timestamptz not null default now()
 );
 
+-- Remove columns that existed in earlier schema versions
+alter table public.flix_trips drop column if exists total_passengers;
+alter table public.flix_trips drop column if exists driver_count;
+
 create unique index if not exists flix_trips_source_filename_idx
   on public.flix_trips (source_filename)
   where source_filename is not null;
