@@ -254,16 +254,17 @@ code { font-family: "SF Mono","Menlo",monospace; font-size: 12px; background: #f
       <table>
         <thead>
           <tr>
-            <th>Bus Partner</th>
+            <th>Line No</th>
             <th>Vehicle</th>
             <th>Route</th>
             <th>Travel Date</th>
-            <th>Passengers</th>
+            <th>Pax</th>
+            <th>WhatsApp Received</th>
             <th>Imported At</th>
           </tr>
         </thead>
         <tbody id="importsBody">
-          <tr><td colspan="6" class="empty">Loading…</td></tr>
+          <tr><td colspan="7" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -305,6 +306,18 @@ function fmtDate(d) {
   if (!d) return '—';
   try { return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
   catch (_) { return d; }
+}
+
+// whatsapp_received_at is stored as plain IST string "YYYY-MM-DD HH:MM:SS" — display without conversion
+function fmtIST(s) {
+  if (!s) return '—';
+  var parts = String(s).split(' ');
+  if (parts.length < 2) return s;
+  var dp = parts[0].split('-');
+  if (dp.length < 3) return s;
+  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var mon = months[parseInt(dp[1], 10) - 1] || dp[1];
+  return dp[2] + ' ' + mon + ' ' + dp[0] + ', ' + parts[1].slice(0, 5);
 }
 
 // ── Environment check ──────────────────────────────────────────────────────
@@ -364,17 +377,18 @@ async function loadImports() {
     const rows = await r.json();
     const tbody = document.getElementById('importsBody');
     if (!Array.isArray(rows) || !rows.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">No imports yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No imports yet.</td></tr>';
       return;
     }
     tbody.innerHTML = rows.map(function(row) {
       const route = [row.departure, row.arrival].filter(Boolean).join(' → ') || '—';
       return '<tr>' +
-        '<td>'  + escHtml(row.bus_partner || '—') + '</td>' +
-        '<td><code>' + escHtml(row.plate || '—') + '</code></td>' +
+        '<td><code>' + escHtml(row.line_number || '—') + '</code></td>' +
+        '<td><code>' + escHtml(row.vehicle_number || '—') + '</code></td>' +
         '<td>'  + escHtml(route) + '</td>' +
         '<td>'  + fmtDate(row.date) + '</td>' +
         '<td><span class="pill">' + (row.passenger_count ?? 0) + '</span></td>' +
+        '<td>'  + fmtIST(row.whatsapp_received_at) + '</td>' +
         '<td>'  + fmtDt(row.created_at) + '</td>' +
       '</tr>';
     }).join('');
@@ -400,15 +414,17 @@ async function runSync() {
   log('▶ Sync triggered', 'hi');
 
   var STEPS = [
-    [300,  '🔌 Connecting to WhatsApp…',                                   'hi'],
-    [900,  '📱 Opening WhatsApp Web…',                                     ''],
-    [2200, '🔍 Searching for group "' + whatsappGroupName + '"…',          ''],
-    [4000, '📂 Group found. Scanning messages…',                           'hi'],
-    [5500, '📥 Downloading PDF attachment(s)…',                            ''],
-    [6800, '🔑 Generating SHA-256 hash…',                                  ''],
-    [7400, '🔄 Checking for duplicates in Supabase…',                      ''],
-    [8200, '📄 Parsing FlixBus PDF…',                                      'hi'],
-    [9000, '💾 Inserting into flixbus_data…',                              ''],
+    [300,  '🔌 Connecting to WhatsApp Web…',                              'hi'],
+    [900,  '📱 Opening WhatsApp Web…',                                    ''],
+    [2200, '🔍 Searching for group "' + whatsappGroupName + '"…',         ''],
+    [3400, '⏮  Loading checkpoint from Supabase…',                        ''],
+    [4400, '⬆  Scrolling up to checkpoint position…',                     ''],
+    [5600, '📂 Group found. Scanning messages oldest → newest…',          'hi'],
+    [6800, '📥 Downloading PDF attachment(s)…',                           ''],
+    [7500, '🔑 SHA-256 hash check (dedup)…',                              ''],
+    [8200, '📄 Parsing FlixBus PDF via pdfplumber…',                      'hi'],
+    [9000, '💾 Inserting into flix_trips…',                               ''],
+    [9600, '🔎 Looking up service_id from trips table…',                  ''],
   ];
 
   stepTimers.forEach(clearTimeout);

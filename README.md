@@ -20,7 +20,9 @@
 
 PDF Sync is a **production-grade automation system** built with NestJS that eliminates the manual overhead of processing FlixBus passenger manifest PDFs shared over WhatsApp. The platform uses Playwright-driven WhatsApp Web automation to watch a designated group, intercepts PDF attachments as they arrive, parses them using a Python `pdfplumber` subprocess for coordinate-aware table extraction, and persists clean relational records to Supabase.
 
-Duplicate PDFs are rejected through a two-layer strategy: a pre-download filename check skips already-known files before any download occurs, and a SHA-256 hash check catches content-identical PDFs re-sent under different filenames.
+Incremental sync is driven by a **timestamp checkpoint**: each PDF's WhatsApp received-at time (IST) is stored alongside the trip data. On every subsequent sync, only PDFs sent after the last recorded timestamp are downloaded — messages older than the checkpoint are skipped entirely without browser interaction.
+
+Duplicate PDFs are rejected through SHA-256 content hashing: if the same PDF is re-sent under a different filename, the hash catches it before any insert occurs. The `pdf_hash` column carries a UNIQUE constraint as a database-level safety net.
 
 > Built as a real-world automation project to demonstrate backend engineering depth across browser automation, document parsing, relational database design, and scheduled task orchestration.
 
@@ -33,9 +35,12 @@ Duplicate PDFs are rejected through a two-layer strategy: a pre-download filenam
 | **WhatsApp PDF Retrieval** | Playwright drives WhatsApp Web to detect and download PDF attachments from a specified group |
 | **Persistent Session** | Browser session state is preserved across restarts — no repeated QR scans |
 | **Headless Execution** | Runs fully headless in server and CI environments |
+| **Checkpoint-based Incremental Sync** | WhatsApp received-at timestamp (IST) used as a cursor — only PDFs newer than the last import are downloaded |
 | **Coordinate-aware PDF Parsing** | Python `pdfplumber` extracts table cells by physical position — no regex fragility |
-| **Two-layer Duplicate Detection** | Pre-download filename check + post-download SHA-256 hash check |
+| **SHA-256 Deduplication** | Content hash checked before every insert; UNIQUE constraint is the database-level backstop |
+| **Service ID Auto-fill** | When `line_number` is absent from the PDF, queries a `trips` table by vehicle number and travel date to fill it automatically |
 | **Relational Schema** | 3 tables with 8 pre-built analytics views for drivers, routes, vehicles, and passengers |
+| **Monitor Dashboard** | Live web dashboard at `/monitor` — sync status, environment check, live logs, recent imports table |
 | **Automated Scheduler** | Daily sync at a configurable time — fires at the same clock time every day |
 
 ---
@@ -45,26 +50,36 @@ Duplicate PDFs are rejected through a two-layer strategy: a pre-download filenam
 ```
 WhatsApp Group
       │
-      ▼
-WhatsAppService (Playwright)
-      │  async generator — yields one PDF at a time, newest first
+      ▼  1. Playwright opens WhatsApp Web (persistent session — no QR every time)
+      │     Navigates to the configured group
       │
-      ├─ Pre-download check (known filename? → skip, no download)
+      ▼  2. Load the latest successfully imported WhatsApp timestamp
+      │     (MAX(whatsapp_received_at)) from flix_trips.
+      │     This acts as the synchronization checkpoint.
       │
-      ▼
-Download PDF
+      ▼  3. Scrolls upward until the checkpoint boundary becomes visible.
       │
-      ├─ SHA-256 hash check (duplicate content? → skip insert)
+      ▼  4. Processes messages in chronological order (oldest → newest)
+      │     For each message:
+      │       — Skip if no PDF attachment
+      │       — Read the WhatsApp timestamp (time + date divider)
+      │       — Skip if timestamp < checkpoint (already imported)
+      │       — Download the PDF
       │
-      ▼
-Python subprocess: scripts/extract_pdf.py (pdfplumber)
-      │  returns structured JSON: metadata, drivers[], passengers[]
+      ▼  5. SHA-256 hash the PDF bytes
+      │     Already in DB? → skip (handles re-sends and boundary duplicates)
       │
-      ▼
-PdfSyncService
-      ├─ insert: flix_trips
-      ├─ insert: trip_drivers
-      └─ insert: trip_passengers
+      ▼  6. Python subprocess: scripts/extract_pdf.py (pdfplumber)
+      │     Returns structured JSON: trip metadata, drivers[], passengers[]
+      │
+      ▼  7. Insert into Supabase:
+      │       flix_trips           — one row per PDF (whatsapp_received_at stored as IST)
+      │       flix_trip_drivers    — one row per driver
+      │       flix_trip_passengers — one row per seat
+      │
+      ▼  8. If line_number is still null:
+             Query trips table by vehicle_number + IST date range
+             → fill line_number from service_id
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning behind every key decision.
@@ -96,7 +111,7 @@ pdf-sync-standalone/
 │   ├── main.ts
 │   ├── pdf-sync/
 │   │   ├── pdf-sync.module.ts
-│   │   ├── pdf-sync.service.ts          # Orchestration — dedup + DB writes
+│   │   ├── pdf-sync.service.ts          # Orchestration — checkpoint, dedup, DB writes
 │   │   ├── pdf-sync.controller.ts       # HTTP endpoints
 │   │   ├── pdf-sync-scheduler.service.ts
 │   │   ├── whatsapp.service.ts          # Playwright WhatsApp Web automation
@@ -104,7 +119,7 @@ pdf-sync-standalone/
 │   ├── supabase/
 │   │   └── supabase.service.ts
 │   ├── monitor/
-│   │   └── monitor.controller.ts
+│   │   └── monitor.controller.ts        # Live dashboard at /monitor
 │   └── common/
 │       └── guards/api-key.guard.ts
 │
@@ -165,7 +180,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 
 PDF_SYNC_WHATSAPP_GROUP=Your Group Name
 
-# false = show the browser window (useful for debugging)
+# false = show the browser window (useful for first QR scan and debugging)
 PDF_SYNC_HEADLESS=true
 
 PDF_SYNC_SCHEDULER_ENABLED=true
@@ -189,10 +204,11 @@ PDF_SYNC_DAILY_TIME=03:00
 | --- | --- | --- |
 | `GET` | `/pdf-sync/health` | Supabase connectivity check |
 | `GET` | `/pdf-sync/summary` | Total imports and last imported trip |
-| `GET` | `/pdf-sync/imports?limit=20` | Recent trip list |
+| `GET` | `/pdf-sync/imports?limit=20` | Recent trip list with line number, route, pax count, and IST received time |
 | `POST` | `/pdf-sync/sync` | Trigger a WhatsApp scan manually |
 | `POST` | `/pdf-sync/import-pdf` | Upload and import a PDF directly (multipart `file`) |
 | `POST` | `/pdf-sync/test-parse` | Parse a PDF and return structured data without storing |
+| `GET` | `/monitor` | Live HTML dashboard |
 
 ---
 
@@ -201,56 +217,60 @@ PDF_SYNC_DAILY_TIME=03:00
 Three tables, all in `public` schema:
 
 ```
-flix_trips        — one row per imported PDF
-trip_drivers      — one row per driver per trip  (FK → flix_trips)
-trip_passengers   — one row per seat per trip    (FK → flix_trips)
+flix_trips             — one row per imported PDF
+flix_trip_drivers      — one row per driver per trip  (FK → flix_trips)
+flix_trip_passengers   — one row per seat per trip    (FK → flix_trips)
 ```
 
 **`flix_trips`**
 ```
-id, bus_partner, plate, trip_date, departure_time, arrival_time,
-departure, arrival, pdf_hash, source_filename, created_at
+id, line_number, bus_partner, vehicle_number,
+trip_date, departure_time, arrival_time, departure, arrival,
+pdf_hash, whatsapp_received_at, created_at
 ```
 
-**`trip_drivers`**
+**`flix_trip_drivers`**
 ```
-id, trip_id, driver_name, role, phone, created_at
+id, trip_id, driver_name, role, phone
 ```
 
-**`trip_passengers`**
+**`flix_trip_passengers`**
 ```
-id, trip_id, seat_no, passenger_name, phone, booking_source, created_at
+id, trip_id, seat_no, passenger_name, phone, booking_source
 ```
 
 **8 pre-built analytics views:**
 
 | View | Answers |
 | --- | --- |
-| `v_trip_summary` | All trip details in one place |
-| `v_driver_stats` | Trips, passengers, activity per driver |
-| `v_driver_routes` | Which routes each driver operates |
-| `v_vehicle_stats` | Trips and utilization per vehicle |
-| `v_route_stats` | Most/least popular routes |
-| `v_partner_stats` | Performance per bus partner |
-| `v_monthly_trends` | Passenger volume by month and route |
-| `v_repeat_passengers` | Passengers who have travelled more than once |
+| `v_flix_trip_summary` | All trip fields + passenger count — used by the monitor dashboard |
+| `v_flix_driver_stats` | Trips, passengers, activity per driver |
+| `v_flix_driver_routes` | Which routes each driver operates |
+| `v_flix_vehicle_stats` | Trips and utilization per vehicle |
+| `v_flix_route_stats` | Most/least popular routes |
+| `v_flix_partner_stats` | Performance per bus partner |
+| `v_flix_monthly_trends` | Passenger volume by month and route |
+| `v_flix_repeat_passengers` | Passengers who have travelled more than once |
 
 Full schema: [`supabase/schema.sql`](supabase/schema.sql)
 
 ---
 
-## Duplicate Detection
+## Checkpoint-based Sync
 
 ```
-Layer 1 — Pre-download (filename)
-  WhatsApp UUID filename checked against known filenames in DB
-  Match → skip without downloading
+First sync (no checkpoint):
+  Scrolls upward as far as possible → imports all PDFs found → stores IST timestamps
 
-Layer 2 — Post-download (content)
-  SHA-256 hash of PDF binary checked against flix_trips.pdf_hash
-  Match → skip insert (catches re-forwarded PDFs with new filenames)
-  Database UNIQUE constraint is a final safety net
+Subsequent syncs (checkpoint = MAX(whatsapp_received_at) from flix_trips):
+  Loads the synchronization checkpoint
+  Scrolls upward until the checkpoint boundary becomes visible
+  Processes messages in chronological order (oldest → newest)
+  Skips messages older than the checkpoint — no download, no browser interaction
+  Hash dedup catches re-sent duplicates at the boundary
 ```
+
+If a PDF fails to parse mid-run, the checkpoint stays at the last successfully stored entry — so the next sync automatically retries from there.
 
 ---
 
@@ -268,10 +288,9 @@ Set `PDF_SYNC_HEADLESS=false` to watch the browser and debug selector issues.
 ## Future Improvements
 
 - [ ] Docker + Docker Compose for one-command deployment
+- [ ] Multi-group support (multiple WhatsApp groups, per-group checkpoints)
 - [ ] Webhook notifications (Slack/Telegram) on each successful import
-- [ ] Admin dashboard for browsing and filtering passenger data
 - [ ] Export endpoint — CSV/XLSX download
-- [ ] Multi-group support
 - [ ] Jest test suite + GitHub Actions CI
 
 ---

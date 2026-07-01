@@ -7,8 +7,8 @@ import type { BrowserContext, Download, Locator, Page } from "playwright";
 export interface DownloadedPdf {
   filePath: string;
   pdfName: string;
-  sourceFilename: string;  // original WhatsApp filename (UUID per send)
-  skipped?: boolean;       // true = pre-identified as known, download was not needed
+  caption?: string; // WhatsApp caption — contains line number e.g. "IN2511"
+  whatsappReceivedAt?: Date; // WhatsApp message timestamp — used as sync checkpoint
 }
 
 @Injectable()
@@ -26,8 +26,8 @@ export class WhatsAppService {
   // a duplicate hash, which closes the generator and triggers the finally
   // block — so the browser always shuts down cleanly.
 
-  async *streamPdfsNewestFirst(
-    preCheck?: (filename: string) => Promise<boolean>,
+  async *streamPdfs(
+    checkpoint?: Date,
   ): AsyncGenerator<DownloadedPdf> {
     this.logger.log("[PDF Sync] Starting");
 
@@ -92,7 +92,7 @@ export class WhatsAppService {
       await this.openGroupChat(page, groupName);
       this.logger.log("[PDF Sync] Group opened");
 
-      // ── Step 3: Scan PDFs newest → oldest, yield each before moving on ─
+      // ── Step 3: Scan PDFs oldest → newest, start from checkpoint ──────────
       const debugDir = debug
         ? this.ensureDir(
             this.configService.get<string>("PDF_SYNC_DEBUG_DIR") ??
@@ -100,64 +100,55 @@ export class WhatsAppService {
           )
         : null;
 
-      // Scroll up so that PDFs buried under recent text messages are rendered
-      // into the DOM before we count them. WhatsApp Web is virtualized — only
-      // messages near the current scroll position exist in the DOM at all.
-      await this.scrollUpToRevealPDFs(page);
+      // Scroll up until the oldest visible message is at or before the checkpoint.
+      // No checkpoint = first sync, scroll up as far as possible.
+      await this.scrollUpToCheckpoint(page, checkpoint);
 
       if (debug && debugDir) {
         await this.debugScreenshot(page, debugDir, "whatsapp-chat-view.png");
         await this.debugDumpCandidates(page);
       }
 
-      const pdfCount = await page
-        .locator('div[data-testid="document-thumb"]')
-        .count();
-
-      if (pdfCount === 0) {
-        this.logger.warn(
-          "[PDF Sync] No PDFs found in chat view." +
-            (debug && debugDir
-              ? ` See debug screenshots in ${debugDir}`
-              : " Enable PDF_SYNC_DEBUG=true for diagnostics."),
-        );
-        return;
-      }
+      const msgLocator = page.locator("div[data-testid^='conv-msg-']");
+      let msgCount = await msgLocator.count();
 
       this.logger.log(
-        `[PDF Sync] Found ${pdfCount} PDF card(s). Scanning newest → oldest.`,
+        `[PDF Sync] ${msgCount} message(s) visible. Scanning oldest → newest from checkpoint.`,
       );
 
-      // WhatsApp renders oldest at top, newest at bottom.
-      // Counting down from the last index processes newest-first,
-      // so the consumer can stop the moment it sees a known hash.
-      for (let i = pdfCount - 1; i >= 0; i--) {
-        const cardNumber = pdfCount - i;
-        this.logger.log(
-          `[PDF Sync] Card ${cardNumber}/${pdfCount} (DOM index ${i}).`,
-        );
+      // WhatsApp renders oldest at top (index 0), newest at bottom (index msgCount-1).
+      // Scan upward so we process in chronological order.
+      // Skip messages before the checkpoint; process everything from checkpoint onward.
+      // Refresh msgCount each iteration — scrolling down virtualizes in newer messages.
+      let pdfSeen = 0;
+      for (let i = 0; i < msgCount; i++) {
+        const msgEl = msgLocator.nth(i);
+        await msgEl.scrollIntoViewIfNeeded().catch(() => undefined);
+        await page.waitForTimeout(300);
 
-        const pdfCard = page
-          .locator('div[data-testid="document-thumb"]')
-          .nth(i);
-        await pdfCard.scrollIntoViewIfNeeded().catch(() => undefined);
-        await page.waitForTimeout(500);
+        // New messages may have been rendered at the bottom as we scroll down.
+        const refreshed = await msgLocator.count();
+        if (refreshed > msgCount) msgCount = refreshed;
 
-        // Read the WhatsApp filename from the card DOM before downloading.
-        // If the caller already has this filename in DB, skip the download entirely.
-        const sourceFilename = await this.readCardFilename(pdfCard);
-        if (sourceFilename && preCheck && (await preCheck(sourceFilename))) {
-          this.logger.log(
-            `[PDF Sync] Card ${cardNumber}/${pdfCount}: known filename "${sourceFilename}" — skipping download.`,
-          );
-          yield { filePath: "", pdfName: sourceFilename, sourceFilename, skipped: true };
-          continue; // no overlay to dismiss — card was never clicked
+        // Only handle messages that contain a PDF attachment.
+        const docThumb = msgEl.locator('div[data-testid="document-thumb"]');
+        if ((await docThumb.count()) === 0) continue;
+
+        const whatsappReceivedAt = await this.readMsgTimestamp(msgEl);
+
+        // Skip messages already covered by the previous sync run.
+        if (checkpoint && whatsappReceivedAt && whatsappReceivedAt < checkpoint) {
+          continue;
         }
 
+        pdfSeen++;
+        this.logger.log(`[PDF Sync] PDF message ${pdfSeen} (msg index ${i}).`);
+
+        const caption = await this.readCardCaption(msgEl);
         const download = await this.downloadOnePdfCard(
           page,
           context,
-          pdfCard,
+          docThumb.first(),
           i,
           debug,
           debugDir,
@@ -169,16 +160,24 @@ export class WhatsAppService {
           const filePath = join(downloadDir, fileName);
           await download.saveAs(filePath);
           this.logger.log(`[PDF Sync] Downloaded: ${fileName}`);
-          yield { filePath, pdfName: fileName, sourceFilename: sourceFilename ?? suggested };
+          yield {
+            filePath,
+            pdfName: fileName,
+            caption: caption ?? undefined,
+            whatsappReceivedAt: whatsappReceivedAt ?? undefined,
+          };
         } else {
           this.logger.warn(
-            `[PDF Sync] Card ${cardNumber}/${pdfCount} had no downloadable file; skipping.`,
+            `[PDF Sync] PDF message ${pdfSeen} had no downloadable file; skipping.`,
           );
         }
 
-        // Dismiss the preview overlay before moving to the next card.
         await page.keyboard.press("Escape");
         await page.waitForTimeout(500);
+      }
+
+      if (pdfSeen === 0) {
+        this.logger.log("[PDF Sync] No new PDFs since last checkpoint.");
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -264,10 +263,11 @@ export class WhatsAppService {
   }
 
   // ─────────────────────────────────────────────
-  // Read the WhatsApp filename from a card's DOM without downloading
+  // ─────────────────────────────────────────────
+  // Read the caption text from a card's message bubble
   // ─────────────────────────────────────────────
 
-  private async readCardFilename(pdfCard: Locator): Promise<string | null> {
+  private async readCardCaption(pdfCard: Locator): Promise<string | null> {
     try {
       return await pdfCard.evaluate((el: Element) => {
         const container =
@@ -276,16 +276,12 @@ export class WhatsAppService {
           el.parentElement?.parentElement?.parentElement;
         if (!container) return null;
 
-        // Prefer a span with a title attribute ending in .pdf
-        const titled = container.querySelector<HTMLElement>('span[title]');
-        if (titled?.title?.toLowerCase().endsWith('.pdf')) return titled.title;
-
-        // Fall back to any span whose visible text looks like a filename
-        const spans = Array.from(container.querySelectorAll('span'));
-        const match = spans.find((s) =>
-          s.textContent?.trim().toLowerCase().endsWith('.pdf'),
+        // Caption text sits in a selectable-text span inside the same bubble.
+        const textSpan = container.querySelector<HTMLElement>(
+          'span.selectable-text, span[data-lexical-text="true"]',
         );
-        return match?.textContent?.trim() ?? null;
+        const text = textSpan?.textContent?.trim() ?? null;
+        return text && text.length > 0 ? text : null;
       });
     } catch {
       return null;
@@ -293,26 +289,143 @@ export class WhatsAppService {
   }
 
   // ─────────────────────────────────────────────
-  // Scroll up to reveal PDFs buried under recent text messages
+  // DOM structure diagnostic — dumps one conv-msg-* subtree then returns null
   // ─────────────────────────────────────────────
 
-  private async scrollUpToRevealPDFs(page: Page): Promise<void> {
-    // Fast path: PDFs already visible — no scrolling needed.
-    const initial = await page
-      .locator('div[data-testid="document-thumb"]')
-      .count();
-    if (initial > 0) {
-      this.logger.log(
-        `[PDF Sync] ${initial} PDF card(s) already visible — no scroll needed.`,
-      );
-      return;
-    }
+  private async readMsgTimestamp(msgEl: Locator): Promise<Date | null> {
+    try {
+      const timeText = await msgEl.evaluate((el: Element): string | null => {
+        // The visible time lives as a plain leaf span inside [data-testid="msg-meta"].
+        // Example structure: <div data-testid="msg-meta"><span><span>[16:41]</span>…
+        const meta = el.querySelector('[data-testid="msg-meta"]');
+        if (!meta) return null;
+        const TIME_RE = /^\d{1,2}:\d{2}$/;
+        for (const span of Array.from(meta.querySelectorAll("span"))) {
+          if (span.children.length > 0) continue;
+          const text = (span.textContent ?? "").trim();
+          if (TIME_RE.test(text)) return text;
+        }
+        return null;
+      });
 
-    // Find the scrollable message container.
+      if (!timeText) {
+        this.logger.warn("[PDF Sync] msg-meta time not found");
+        return null;
+      }
+
+      // Date comes from the WhatsApp date-divider element that precedes this
+      // message in the DOM. Walk up through ancestor levels and check siblings
+      // at each level — WhatsApp wraps messages in multiple positioned divs so
+      // the list-level siblings (where dividers live) may be several hops up.
+      const dateText = await msgEl.evaluate((el: Element): string | null => {
+        const DATE_RE =
+          /(\d{1,2}\s+\w+\s+\d{4}|today|yesterday|\d{1,2}\/\d{1,2}\/\d{4})/i;
+
+        let anchor: Element | null = el;
+        for (let depth = 0; depth < 8 && anchor; depth++) {
+          let sibling = anchor.previousElementSibling;
+          while (sibling) {
+            const isMsg =
+              sibling.hasAttribute("data-id") ||
+              !!sibling.querySelector('[data-testid^="conv-msg-"]');
+            if (!isMsg) {
+              const text = (sibling.textContent ?? "").trim();
+              if (text.length > 0 && text.length < 60) {
+                const m = text.match(DATE_RE);
+                if (m) return m[1];
+              }
+            }
+            sibling = sibling.previousElementSibling;
+          }
+          anchor = anchor.parentElement;
+        }
+        return null;
+      });
+
+      this.logger.log(
+        `[PDF Sync] Timestamp: time="${timeText}" dateDivider="${dateText ?? "none"}"`,
+      );
+
+      if (!dateText) {
+        // Diagnostic: walk up ancestors and show siblings at each depth so we
+        // can identify exactly where date-divider elements live in the DOM.
+        const siblingInfo = await msgEl.evaluate((el: Element): string => {
+          const parts: string[] = [];
+          let anchor: Element | null = el;
+          for (let depth = 0; depth < 8 && anchor; depth++) {
+            let s = anchor.previousElementSibling;
+            let n = 0;
+            while (s && n < 2) {
+              const text = (s.textContent ?? "").trim().slice(0, 30);
+              const role = s.getAttribute("role") ?? "-";
+              const tid = (s.getAttribute("data-testid") ?? "").slice(0, 15);
+              parts.push(`d${depth}:<${s.tagName} r="${role}" t="${tid}"> "${text}"`);
+              s = s.previousElementSibling;
+              n++;
+            }
+            anchor = anchor.parentElement;
+          }
+          return parts.length ? parts.join(" | ") : "no-siblings-at-any-depth";
+        });
+        this.logger.warn(`[PDF Sync] No date divider; siblings by depth: ${siblingInfo}`);
+      }
+
+      const today = new Date();
+      let year = today.getFullYear();
+      let month = today.getMonth() + 1;
+      let day = today.getDate();
+
+      if (dateText) {
+        const lower = dateText.toLowerCase();
+        if (lower === "yesterday") {
+          const y = new Date(today);
+          y.setDate(y.getDate() - 1);
+          year = y.getFullYear();
+          month = y.getMonth() + 1;
+          day = y.getDate();
+        } else if (lower !== "today") {
+          // "18 June 2026" format
+          const m1 = dateText.match(
+            /^(\d{1,2})\s+(\w+)\s+(\d{4})$/i,
+          );
+          if (m1) {
+            const MONTHS: Record<string, number> = {
+              january: 1, february: 2, march: 3, april: 4,
+              may: 5, june: 6, july: 7, august: 8,
+              september: 9, october: 10, november: 11, december: 12,
+            };
+            day = parseInt(m1[1], 10);
+            month = MONTHS[m1[2].toLowerCase()] ?? month;
+            year = parseInt(m1[3], 10);
+          }
+          // "DD/MM/YYYY" format
+          const m2 = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+          if (m2) {
+            day = parseInt(m2[1], 10);
+            month = parseInt(m2[2], 10);
+            year = parseInt(m2[3], 10);
+          }
+        }
+      }
+
+      // Construct as explicit IST datetime so the Date is correct on any server timezone.
+      const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${timeText}:00+05:30`;
+      const parsed = new Date(iso);
+      return isNaN(parsed.getTime()) ? null : parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Scroll up to load messages at/before the checkpoint into the DOM
+  // ─────────────────────────────────────────────
+
+  private async scrollUpToCheckpoint(page: Page, checkpoint?: Date): Promise<void> {
     const containerSelectors = [
       'div[data-testid="msg-container"]',
       '#main div[tabindex="-1"]',
-      '#main .copyable-area',
+      "#main .copyable-area",
     ];
     let container = null;
     for (const sel of containerSelectors) {
@@ -324,34 +437,37 @@ export class WhatsAppService {
     }
 
     if (!container) {
-      this.logger.warn(
-        "[PDF Sync] Could not find scroll container — PDFs may be missed if buried under text messages.",
-      );
+      this.logger.warn("[PDF Sync] Scroll container not found — older messages may be missing.");
       return;
     }
 
-    // Scroll up one step at a time and stop the moment a PDF card appears.
-    // Each step covers ~1500 px; 10 steps = ~15 000 px of history.
-    for (let step = 1; step <= 10; step++) {
+    // With a checkpoint: scroll up until the oldest visible message is older
+    // than the checkpoint so we don't miss messages right at the boundary.
+    // Without a checkpoint (first sync): scroll up 20 steps to load as much
+    // history as possible (~30 000 px).
+    const MAX_STEPS = 20;
+
+    for (let step = 1; step <= MAX_STEPS; step++) {
       await container
-        .evaluate((el: Element) => {
-          (el as HTMLElement).scrollTop -= 1500;
-        })
+        .evaluate((el: Element) => { (el as HTMLElement).scrollTop -= 1500; })
         .catch(() => undefined);
       await page.waitForTimeout(400);
 
-      const count = await page
-        .locator('div[data-testid="document-thumb"]')
-        .count();
-      if (count > 0) {
-        this.logger.log(
-          `[PDF Sync] Found ${count} PDF card(s) after ${step} scroll step(s).`,
-        );
-        return;
+      if (checkpoint) {
+        const msgLocator = page.locator("div[data-testid^='conv-msg-']");
+        const count = await msgLocator.count();
+        if (count > 0) {
+          const oldestTs = await this.readMsgTimestamp(msgLocator.nth(0));
+          if (oldestTs && oldestTs <= checkpoint) {
+            this.logger.log(`[PDF Sync] Reached checkpoint area after ${step} scroll step(s).`);
+            return;
+          }
+        }
       }
     }
 
-    this.logger.warn("[PDF Sync] No PDFs found after scrolling up 15 000 px.");
+    const msgCount = await page.locator("div[data-testid^='conv-msg-']").count();
+    this.logger.log(`[PDF Sync] Scrolled up ${MAX_STEPS} step(s); ${msgCount} message(s) visible.`);
   }
 
   // ─────────────────────────────────────────────

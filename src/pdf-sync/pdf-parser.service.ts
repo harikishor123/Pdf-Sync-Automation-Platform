@@ -18,8 +18,9 @@ export interface SeatDetail {
 }
 
 export interface FlixBusParsed {
+  line_number: string | null;
   bus_partner: string | null;
-  plate: string | null;
+  vehicle_number: string | null;
   date: string | null;
   departure_time: string | null;
   arrival_time: string | null;
