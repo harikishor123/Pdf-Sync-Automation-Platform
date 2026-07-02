@@ -202,7 +202,7 @@ code { font-family: "SF Mono","Menlo",monospace; font-size: 12px; background: #f
         <div class="status-text" id="statusTxt">Loading…</div>
       </div>
 
-      <div class="kv"><span class="k">WhatsApp Group</span><span class="v" id="kvGroup">—</span></div>
+      <div class="kv"><span class="k">WhatsApp Groups</span><span class="v" id="kvGroup">—</span></div>
       <div class="kv"><span class="k">Last Sync</span><span class="v" id="kvLast">—</span></div>
       <div class="kv"><span class="k">PDFs Imported</span><span class="v" id="kvCount">—</span></div>
       <div class="kv"><span class="k">Last Imported PDF</span><span class="v" id="kvLastPdf">—</span></div>
@@ -254,6 +254,7 @@ code { font-family: "SF Mono","Menlo",monospace; font-size: 12px; background: #f
       <table>
         <thead>
           <tr>
+            <th>Group</th>
             <th>Line No</th>
             <th>Vehicle</th>
             <th>Route</th>
@@ -264,7 +265,7 @@ code { font-family: "SF Mono","Menlo",monospace; font-size: 12px; background: #f
           </tr>
         </thead>
         <tbody id="importsBody">
-          <tr><td colspan="7" class="empty">Loading…</td></tr>
+          <tr><td colspan="8" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -377,12 +378,13 @@ async function loadImports() {
     const rows = await r.json();
     const tbody = document.getElementById('importsBody');
     if (!Array.isArray(rows) || !rows.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">No imports yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No imports yet.</td></tr>';
       return;
     }
     tbody.innerHTML = rows.map(function(row) {
       const route = [row.departure, row.arrival].filter(Boolean).join(' → ') || '—';
       return '<tr>' +
+        '<td class="dim">'  + escHtml(row.source_group || '—') + '</td>' +
         '<td><code>' + escHtml(row.line_number || '—') + '</code></td>' +
         '<td><code>' + escHtml(row.vehicle_number || '—') + '</code></td>' +
         '<td>'  + escHtml(route) + '</td>' +

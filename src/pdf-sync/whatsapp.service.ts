@@ -27,15 +27,10 @@ export class WhatsAppService {
   // block — so the browser always shuts down cleanly.
 
   async *streamPdfs(
+    groupName: string,
     checkpoint?: Date,
   ): AsyncGenerator<DownloadedPdf> {
-    this.logger.log("[PDF Sync] Starting");
-
-    const groupName = this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUP");
-    if (!groupName) {
-      this.logger.warn("[PDF Sync] PDF_SYNC_WHATSAPP_GROUP not set. Skipping.");
-      return;
-    }
+    this.logger.log(`[PDF Sync] Starting — group: "${groupName}"`);
 
     const debug = this.isDebugEnabled();
     const { chromium } = await import("playwright");
@@ -238,7 +233,7 @@ export class WhatsAppService {
     } catch {
       throw new Error(
         `[PDF Sync] No search results appeared for "${groupName}". ` +
-          "Check that PDF_SYNC_WHATSAPP_GROUP matches the exact group name in WhatsApp.",
+          "Check that PDF_SYNC_WHATSAPP_GROUPS contains the exact group name as it appears in WhatsApp.",
       );
     }
 
@@ -249,7 +244,7 @@ export class WhatsAppService {
     if ((await matchingResult.count()) === 0) {
       throw new Error(
         `[PDF Sync] Group "${groupName}" not found in search results. ` +
-          "Verify the group name in PDF_SYNC_WHATSAPP_GROUP.",
+          "Verify the group name in PDF_SYNC_WHATSAPP_GROUPS.",
       );
     }
 

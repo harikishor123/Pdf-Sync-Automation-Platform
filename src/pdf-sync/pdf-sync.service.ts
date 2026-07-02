@@ -57,7 +57,7 @@ export class PdfSyncService {
             .join(" · ")
         : null,
       whatsappGroup:
-        this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUP") ?? null,
+        this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUPS") ?? null,
     };
   }
 
@@ -66,13 +66,14 @@ export class PdfSyncService {
     const { data, error } = await supabase
       .from("v_flix_trip_summary")
       .select(
-        "id, line_number, bus_partner, vehicle_number, trip_date, departure, arrival, passenger_count, whatsapp_received_at, created_at",
+        "id, source_group, line_number, bus_partner, vehicle_number, trip_date, departure, arrival, passenger_count, whatsapp_received_at, created_at",
       )
       .order("created_at", { ascending: false })
       .limit(Math.min(limit, 100));
     if (error) throw new InternalServerErrorException(error.message);
     return (data ?? []).map((row) => ({
       id: row.id,
+      source_group: row.source_group,
       line_number: row.line_number,
       bus_partner: row.bus_partner,
       vehicle_number: row.vehicle_number,
@@ -99,11 +100,9 @@ export class PdfSyncService {
     return {
       backend: true,
       supabase: supabaseOk,
-      whatsappGroupConfigured: !!this.configService.get<string>(
-        "PDF_SYNC_WHATSAPP_GROUP",
-      ),
+      whatsappGroupConfigured: !!this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUPS"),
       whatsappGroup:
-        this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUP") ?? null,
+        this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUPS") ?? null,
     };
   }
 
@@ -130,18 +129,32 @@ export class PdfSyncService {
     const results: Array<Record<string, any>> = [];
     let scanned = 0;
 
-    const checkpoint = await this.loadCheckpoint();
-    if (checkpoint) {
-      this.logger.log(`[PDF Sync] Checkpoint: ${checkpoint.toISOString()}`);
-    } else {
-      this.logger.log("[PDF Sync] No checkpoint — full scan.");
+    const groups = (this.configService.get<string>("PDF_SYNC_WHATSAPP_GROUPS") ?? "")
+      .split(",")
+      .map((g) => g.trim())
+      .filter(Boolean);
+
+    if (!groups.length) {
+      this.logger.warn("[PDF Sync] PDF_SYNC_WHATSAPP_GROUPS not set. Skipping.");
+      return { scanned: 0, imported: 0, skipped: 0, failed: 0, results: [] };
     }
 
-    for await (const download of this.whatsApp.streamPdfs(checkpoint)) {
-      scanned++;
-      this.logger.log(`[PDF Sync] Processing: ${download.pdfName}`);
-      const result = await this.ingestDownloadedPdf(download);
-      results.push(result);
+    for (const groupName of groups) {
+      this.logger.log(`[PDF Sync] Syncing group: "${groupName}"`);
+
+      const checkpoint = await this.loadCheckpoint(groupName);
+      if (checkpoint) {
+        this.logger.log(`[PDF Sync] Checkpoint for "${groupName}": ${checkpoint.toISOString()}`);
+      } else {
+        this.logger.log(`[PDF Sync] No checkpoint for "${groupName}" — full scan.`);
+      }
+
+      for await (const download of this.whatsApp.streamPdfs(groupName, checkpoint)) {
+        scanned++;
+        this.logger.log(`[PDF Sync] Processing: ${download.pdfName}`);
+        const result = await this.ingestDownloadedPdf(download, groupName);
+        results.push(result);
+      }
     }
 
     const summary = {
@@ -160,11 +173,12 @@ export class PdfSyncService {
 
   // ── Core import pipeline ───────────────────────────────────────────────────
 
-  private async loadCheckpoint(): Promise<Date | null> {
+  private async loadCheckpoint(groupName: string): Promise<Date | null> {
     const supabase = this.supabaseService.getClient();
     const { data } = await supabase
       .from('flix_trips')
       .select('whatsapp_received_at')
+      .eq('source_group', groupName)
       .not('whatsapp_received_at', 'is', null)
       .order('whatsapp_received_at', { ascending: false })
       .limit(1)
@@ -176,11 +190,11 @@ export class PdfSyncService {
     return isNaN(d.getTime()) ? null : d;
   }
 
-  private async ingestDownloadedPdf(download: DownloadedPdf) {
+  private async ingestDownloadedPdf(download: DownloadedPdf, sourceGroup?: string) {
     const pdfName = download.pdfName || basename(download.filePath);
     const buffer = readFileSync(download.filePath);
     const captionLineNumber = this.extractLineNumberFromCaption(download.caption);
-    return this.importPdfBuffer(buffer, pdfName, download.filePath, captionLineNumber, download.whatsappReceivedAt);
+    return this.importPdfBuffer(buffer, pdfName, download.filePath, captionLineNumber, download.whatsappReceivedAt, sourceGroup);
   }
 
   private extractLineNumberFromCaption(caption?: string): string | null {
@@ -196,6 +210,7 @@ export class PdfSyncService {
     filePath?: string,
     captionLineNumber?: string | null,
     whatsappReceivedAt?: Date,
+    sourceGroup?: string,
   ) {
     const pdfHash = this.hashBuffer(buffer);
     const supabase = this.supabaseService.getClient();
@@ -239,6 +254,7 @@ export class PdfSyncService {
         whatsapp_received_at: whatsappReceivedAt
           ? whatsappReceivedAt.toLocaleString('sv', { timeZone: 'Asia/Kolkata' })
           : null,
+        source_group:         sourceGroup ?? null,
       })
       .select("id")
       .single();

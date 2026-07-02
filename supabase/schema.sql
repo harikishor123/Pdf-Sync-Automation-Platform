@@ -58,11 +58,14 @@ end $$;
 drop index if exists public.flix_trips_source_filename_idx;
 alter table public.flix_trips drop column if exists source_filename;
 
+alter table public.flix_trips add column if not exists source_group text;
+
 create index if not exists flix_trips_date_idx     on public.flix_trips (trip_date desc);
 create index if not exists flix_trips_received_idx on public.flix_trips (whatsapp_received_at desc);
 create index if not exists flix_trips_vehicle_number_idx   on public.flix_trips (vehicle_number);
 create index if not exists flix_trips_route_idx   on public.flix_trips (departure, arrival);
 create index if not exists flix_trips_partner_idx on public.flix_trips (bus_partner);
+create index if not exists flix_trips_group_idx   on public.flix_trips (source_group);
 
 -- =============================================================================
 -- TABLE: flix_trip_drivers  —  one row per driver per trip
@@ -129,6 +132,7 @@ drop view if exists public.v_flix_trip_summary;
 create view public.v_flix_trip_summary as
 select
   t.id,
+  t.source_group,
   t.line_number,
   t.trip_date,
   t.departure_time,
